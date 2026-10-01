@@ -1,0 +1,69 @@
+[package]
+name = "super-tool"
+description = "The Super CLI for verifying software behavior"
+default-run = "super"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+documentation.workspace = true
+keywords = ["testing", "verification"]
+categories = ["command-line-utilities", "development-tools::testing"]
+include = ["/src", "/tests", "/README.md", "/LICENSE*"]
+
+[[bin]]
+name = "super"
+path = "src/main.rs"
+
+[[bin]]
+name = "sup"
+path = "src/short.rs"
+test = false
+bench = false
+
+[dependencies]
+super-types.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+clap.workspace = true
+console.workspace = true
+crossterm.workspace = true
+dialoguer.workspace = true
+directories.workspace = true
+fs2.workspace = true
+futures-util.workspace = true
+ignore.workspace = true
+iana-time-zone.workspace = true
+notify.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tree-sitter.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-c-sharp.workspace = true
+tree-sitter-java.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-vhdl.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["process"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["term", "poll", "signal"] }
+
+[lints]
+workspace = true

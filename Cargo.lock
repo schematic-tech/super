@@ -1166,8 +1166,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "sch-tool"
-version = "0.8.0"
+name = "super-tool"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1183,7 +1183,7 @@ dependencies = [
  "ignore",
  "nix",
  "notify",
- "pup-types",
+ "super-types",
  "regex",
  "reqwest",
  "semver",
@@ -1203,8 +1203,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "pup-types"
-version = "0.8.0"
+name = "super-types"
+version = "0.9.0"
 dependencies = [
  "base64",
  "chrono",

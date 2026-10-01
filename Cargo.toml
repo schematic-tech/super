@@ -1,18 +1,18 @@
 [workspace]
-members = ["crates/pup-types", "crates/sch-tool"]
+members = ["crates/super-types", "crates/super-tool"]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/schematic-tech/sch"
-documentation = "https://docs.schematic.tech/pup/"
+repository = "https://github.com/schematic-tech/super"
+documentation = "https://docs.schematic.tech/super/"
 rust-version = "1.97"
 
 [workspace.dependencies]
-pup-types = { version = "0.8.0", path = "crates/pup-types" }
+super-types = { version = "0.9.0", path = "crates/super-types" }
 
 anyhow = "1"
 base64 = "0.22"
