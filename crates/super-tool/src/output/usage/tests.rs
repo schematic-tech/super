@@ -48,13 +48,13 @@ fn report_has_compact_tables_and_separates_bold_context_from_muted_headings() {
     let lines = report_lines(&report(), &query(), chrono_tz::UTC, 76);
     assert_eq!(
         text(&lines),
-        "Super usage · Sep 25, 12:42 AM · UTC\n\nWeekly quota · all repositories · rolling 7 days\n━━━━━━━━━━━━━━━─────  75% remaining · 750M of 1B tokens\nMore tokens available Sep 26, 12:30 AM\n\nLast 30 days · All repositories\nTOKENS USED · SUPERTESTS RUN\n     228.7K · 3\n\nRecent checks\n\nSUPERTEST             · REPOSITORY · STATUS   · TOKENS\namounts_stay_positive · payments   · pass     · 128.4K\nrefunds_are_bounded   · payments   · fail     ·  92.1K\nroundtrip             · parser     · checking ·   8.2K+\n\nShowing 3 of 3 checks\n+ Usage is still being reported"
+        "Token usage · Sep 25, 12:42 AM · UTC\n\nWeekly quota · all repositories · rolling 7 days\n━━━━━━━━━━━━━━━─────  75% remaining · 750M of 1B tokens\nMore tokens available Sep 26, 12:30 AM\n\nLast 30 days · All repositories\nTOKENS USED · SUPERTESTS RUN\n     228.7K · 3\n\nRecent checks\n\nSUPERTEST             · REPOSITORY · STATUS   · TOKENS\namounts_stay_positive · payments   · pass     · 128.4K\nrefunds_are_bounded   · payments   · fail     ·  92.1K\nroundtrip             · parser     · checking ·   8.2K+\n\nShowing 3 of 3 checks\n+ Usage is still being reported"
     );
     assert!(
         lines[0]
             .parts
             .iter()
-            .any(|(text, ink, bold)| text == "Super usage" && *ink == Ink::Accent && *bold)
+            .any(|(text, ink, bold)| text == "Token usage" && *ink == Ink::Accent && *bold)
     );
     assert!(!lines.last().unwrap().text().is_empty());
     let checking = lines.iter().find(|line| line.text().starts_with("roundtrip")).unwrap();

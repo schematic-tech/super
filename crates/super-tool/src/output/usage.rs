@@ -19,7 +19,7 @@ impl Ui {
 fn report_lines(report: &UsageReport, query: &UsageQuery, timezone: Tz, width: usize) -> Vec<Line> {
     let mut lines = vec![
         Line::default()
-            .push("Super usage", Ink::Accent, true)
+            .push("Token usage", Ink::Accent, true)
             .muted(" · ")
             .plain(timestamp(report.as_of, timezone))
             .muted(" · ")

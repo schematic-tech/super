@@ -87,7 +87,7 @@ impl LocalState {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialSource {
-    /// A Super API key whose secret is stored in `api-key` with mode 0600.
+    /// A Schematic API key whose secret is stored in `api-key` with mode 0600.
     PupApiKey,
 }
 
@@ -198,11 +198,11 @@ impl StateStore {
         open_private(&path)
     }
 
-    /// Stores the Super API key outside the ordinary JSON state document.  The file is replaced
+    /// Stores the Schematic API key outside the ordinary JSON state document.  The file is replaced
     /// atomically and is private to the current user.
     pub fn save_api_key(&self, value: &str) -> Result<()> {
         if value.trim().is_empty() || value.chars().any(char::is_control) {
-            anyhow::bail!("the Super API key is empty or contains control characters")
+            anyhow::bail!("the Schematic API key is empty or contains control characters")
         }
         self.ensure_directory()?;
         let path = self.api_key_path();
@@ -217,7 +217,7 @@ impl StateStore {
         Ok(())
     }
 
-    /// Reads the private Super API key, if the user is logged in.
+    /// Reads the private Schematic API key, if the user is logged in.
     pub fn load_api_key(&self) -> Result<Option<String>> {
         let path = self.api_key_path();
         if let Ok(metadata) = fs::symlink_metadata(&path) {
@@ -232,7 +232,7 @@ impl StateStore {
                 use std::os::unix::fs::PermissionsExt;
                 if metadata.permissions().mode() & 0o077 != 0 {
                     anyhow::bail!(
-                        "stored Super API key {} is readable by another user; run `super login` again",
+                        "stored Schematic API key {} is readable by another user; run `super login` again",
                         path.display()
                     )
                 }
@@ -242,12 +242,12 @@ impl StateStore {
             Ok(value) => {
                 let value = value.trim().to_owned();
                 if value.is_empty() || value.chars().any(char::is_control) {
-                    anyhow::bail!("the stored Super API key is invalid; run `super logout` then `super login`")
+                    anyhow::bail!("the stored Schematic API key is invalid; run `super logout` then `super login`")
                 }
                 Ok(Some(value))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).with_context(|| "could not read the stored Super API key"),
+            Err(error) => Err(error).with_context(|| "could not read the stored Schematic API key"),
         }
     }
 
@@ -256,7 +256,7 @@ impl StateStore {
         match fs::remove_file(self.api_key_path()) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error).with_context(|| "could not remove the stored Super API key"),
+            Err(error) => Err(error).with_context(|| "could not remove the stored Schematic API key"),
         }
     }
 

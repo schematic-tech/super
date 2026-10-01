@@ -115,10 +115,10 @@ impl Ui {
     pub fn api_key(&self) -> Result<String> {
         ensure!(self.interactive, "noninteractive login requires SUPER_ACCESS_TOKEN");
         Password::with_theme(&PromptTheme)
-            .with_prompt("Super API key")
+            .with_prompt("Schematic API key")
             .allow_empty_password(false)
             .interact()
-            .context("could not read the Super API key")
+            .context("could not read the Schematic API key")
     }
 }
 

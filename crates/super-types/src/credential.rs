@@ -1,4 +1,4 @@
-//! Environment routing carried by a Super API key. Decoding is not authentication.
+//! Environment routing carried by a Schematic API key. Decoding is not authentication.
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use uuid::Uuid;
@@ -63,7 +63,7 @@ impl RoutedKey {
         if !value.starts_with("super_v") && !value.starts_with("pup_v") {
             return Ok(None);
         }
-        let invalid = "the Super API key is malformed or uses an unsupported version";
+        let invalid = "the Schematic API key is malformed or uses an unsupported version";
         if value.len() > 1024 {
             return Err(invalid);
         }

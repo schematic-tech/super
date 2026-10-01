@@ -24,7 +24,10 @@ fn both_executables_share_the_canonical_help_version_and_local_profile() {
         assert_eq!(outputs[0].stdout, outputs[1].stdout);
         assert_eq!(outputs[0].stderr, outputs[1].stderr);
         if args == ["--version"] {
-            assert_eq!(String::from_utf8_lossy(&outputs[0].stdout), "super 0.9.0\n");
+            assert_eq!(
+                String::from_utf8_lossy(&outputs[0].stdout),
+                concat!("super ", env!("CARGO_PKG_VERSION"), "\n")
+            );
         }
     }
 }

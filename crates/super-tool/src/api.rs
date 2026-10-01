@@ -197,7 +197,7 @@ impl PupClient {
             .authorize(request)
             .send()
             .await
-            .context("could not load Super usage; retry `super usage`")?;
+            .context("could not load token usage; retry `super usage`")?;
         if response.status() == StatusCode::UNAUTHORIZED {
             bail!("your Super credential could not be verified\n  Run `super login`, then retry `super usage`.")
         }

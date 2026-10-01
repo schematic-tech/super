@@ -161,7 +161,7 @@ fn default_report_works_outside_git_and_json_preserves_the_wire_report() {
     assert!(output.status.success(), "{output:?}");
     let text = String::from_utf8(output.stdout).unwrap();
     for expected in [
-        "Super usage",
+        "Token usage",
         "75% remaining",
         "750M of 1B tokens",
         "228.7K",

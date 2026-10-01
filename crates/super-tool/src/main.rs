@@ -1067,7 +1067,7 @@ fn state_store_api_key(_state: &LocalState) -> Result<String> {
     let store = StateStore::discover()?;
     store
         .load_api_key()?
-        .with_context(|| "Super API key is missing; run `super login` again")
+        .with_context(|| "Schematic API key is missing; run `super login` again")
 }
 
 fn local_context(store: &StateStore, path: Option<&Path>) -> Result<(LocalState, LocalRepository, git::GitRepository)> {
