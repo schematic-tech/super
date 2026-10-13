@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    api::{PupClient, RevisionCache},
+    api::{RevisionCache, SuperClient},
     config::{CredentialSource, LocalRepository, LocalRevision, StateStore},
     git::GitRepository,
 };
@@ -48,7 +48,7 @@ pub async fn run(store: StateStore) -> Result<()> {
     record_process(&mut lock)?;
     loop {
         let state = store.load()?;
-        if state.repositories.is_empty() || state.credential != Some(CredentialSource::PupApiKey) {
+        if state.repositories.is_empty() || state.credential != Some(CredentialSource::SuperApiKey) {
             return Ok(());
         }
         reconcile_all(&store).await?;
@@ -105,7 +105,7 @@ async fn reconcile_all(store: &StateStore) -> Result<()> {
     let Some(api_url) = state.api_url.as_deref() else {
         return Ok(());
     };
-    if state.credential != Some(CredentialSource::PupApiKey) {
+    if state.credential != Some(CredentialSource::SuperApiKey) {
         return Ok(());
     }
     let Some(token) = store.load_api_key()? else {
@@ -121,7 +121,7 @@ async fn reconcile_all(store: &StateStore) -> Result<()> {
     if credential_api != api_url {
         return Ok(());
     }
-    let client = PupClient::new(api_url, Some(&token))?;
+    let client = SuperClient::new(api_url, Some(&token))?;
     for repository in state.repositories {
         let git = from_local(&repository);
         let Ok(head) = git.head() else {

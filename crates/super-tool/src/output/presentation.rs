@@ -3,7 +3,7 @@ use super::{
     style::{Ink, Line},
 };
 use chrono::Utc;
-use super_types::{CheckAssurance, CheckOperationalError, CheckOutcome};
+use super_types::{CheckOperationalError, CheckOutcome};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -37,13 +37,6 @@ fn kind(check: &Check) -> Kind {
     }
 }
 
-fn is_certified(check: &Check) -> bool {
-    check
-        .result
-        .as_ref()
-        .is_some_and(|result| result.assurance == CheckAssurance::Certified)
-}
-
 pub(super) struct Status {
     pub label: String,
     pub marker: &'static str,
@@ -63,9 +56,7 @@ impl Status {
 
 pub(super) fn status(check: &Check) -> Status {
     let (label, marker, ink) = match kind(check) {
-        Kind::Pass if is_certified(check) => ("pass (certified)", "✓", Ink::Pass),
         Kind::Pass => ("pass", "✓", Ink::Pass),
-        Kind::Fail if is_certified(check) => ("fail (certified)", "×", Ink::Fail),
         Kind::Fail => ("fail", "×", Ink::Fail),
         Kind::Conditional => ("conditional", "?", Ink::Warning),
         Kind::Pending => ("pending", "○", Ink::Muted),
@@ -117,18 +108,17 @@ pub(super) fn activity_line(check: &Check) -> Line {
 }
 
 pub(super) fn activity_sentence(text: &str, tick: Option<usize>) -> Line {
-    let (prefix, rest) = text.split_at(text.find(char::is_whitespace).unwrap_or(text.len()));
-    let verb = prefix.strip_suffix("...").or_else(|| prefix.strip_suffix('…'));
-    if let Some(verb) = verb.filter(|word| !word.is_empty() && word.chars().all(char::is_alphabetic)) {
-        // Animate only the display prefix. Three columns keep the supplied sentence still,
-        // including when the API uses a single Unicode ellipsis instead of three dots.
-        let prefix = tick.map_or_else(
-            || prefix.to_owned(),
-            |tick| format!("{verb}{:<3}", ".".repeat((tick / 5) % 3 + 1)),
-        );
-        Line::default()
-            .push(prefix, Ink::Activity, true)
-            .push(rest, Ink::Activity, false)
+    if let (Some(tick), Some(sentence)) = (tick, text.strip_suffix('.'))
+        && !sentence.is_empty()
+        && !sentence.ends_with('.')
+    {
+        // Replace the final full stop only in live output. Reserve all three dot
+        // columns on every frame so wrapping stays fixed as the dots advance.
+        Line::default().push(sentence, Ink::Activity, false).push(
+            format!("{:<3}", ".".repeat((tick / 5) % 3 + 1)),
+            Ink::Activity,
+            false,
+        )
     } else {
         Line::default().push(text, Ink::Activity, false)
     }
@@ -139,20 +129,6 @@ pub(super) fn is_pass(check: &Check) -> bool {
         .result
         .as_ref()
         .is_some_and(|result| result.outcome == CheckOutcome::Pass)
-}
-
-fn certified_pass_suffix(results: &Results) -> String {
-    let count = results
-        .rows
-        .iter()
-        .filter_map(|row| row.current.as_ref())
-        .filter(|check| is_pass(check) && is_certified(check))
-        .count();
-    if count == 0 {
-        String::new()
-    } else {
-        format!(" ({count} certified)")
-    }
 }
 
 pub(super) fn summary(results: &Results) -> Line {
@@ -194,9 +170,6 @@ pub(super) fn summary(results: &Results) -> Line {
     ] {
         if count > 0 {
             line = line.muted(" · ").push(format!("{count} {name}"), ink, false);
-            if name == "passed" {
-                line = line.push(certified_pass_suffix(results), ink, false);
-            }
         }
     }
     for (name, count) in other {
@@ -252,7 +225,6 @@ pub(super) fn explanation(check: &Check, disconnected: bool) -> String {
     conclusion().unwrap_or_else(|| match kind(check) {
         Kind::Queued | Kind::Pending => "Waiting to start. No analysis has been reported yet.".into(),
         Kind::Checking => "No detailed activity has been reported yet.".into(),
-        Kind::Pass if is_certified(check) => "A certificate was accepted for this result.".into(),
         Kind::Pass => "No problems found within this supertest.".into(),
         Kind::Blocked => "The check could not finish. No further reason was reported.".into(),
         Kind::Error => "The check ended with an operational error.".into(),
@@ -572,15 +544,7 @@ pub(super) fn snapshot(results: &Results, include_history: bool, details: bool, 
     {
         return vec![
             Line::default()
-                .push(
-                    format!(
-                        "✓ {} supertests passed{}",
-                        results.rows.len(),
-                        certified_pass_suffix(results)
-                    ),
-                    Ink::Pass,
-                    true,
-                )
+                .push(format!("✓ {} supertests passed", results.rows.len()), Ink::Pass, true)
                 .muted(" · ")
                 .append(context(results)),
         ];

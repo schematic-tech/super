@@ -184,6 +184,12 @@ impl Line {
         }
         let mut lines = Vec::new();
         for paragraph in paragraphs {
+            // Trailing padding reserves display columns, including animated dots.
+            // It must not introduce wrap boundaries that change between frames.
+            let content_end = paragraph
+                .iter()
+                .rposition(|(c, _, _)| *c != ' ')
+                .map_or(0, |index| index + 1);
             let indent = paragraph
                 .iter()
                 .take_while(|(c, _, _)| *c == ' ')
@@ -203,7 +209,7 @@ impl Line {
                     }
                     used += length;
                     end += 1;
-                    if (*c == ' ' || *c == '_') && used >= available / 2 {
+                    if ((*c == ' ' && end < content_end) || *c == '_') && used >= available / 2 {
                         boundary = Some(end);
                     }
                 }

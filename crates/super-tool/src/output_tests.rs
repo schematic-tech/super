@@ -56,7 +56,7 @@ fn check(index: u64) -> Check {
 
 #[test]
 fn usage_and_cli_status_follow_typed_outcomes_instead_of_display_wording() {
-    use super_types::{CheckAssurance, CheckOperationalError, CheckOutcome, usage::CheckStatus};
+    use super_types::{CheckOperationalError, CheckOutcome, usage::CheckStatus};
 
     let mut active = check(1);
     active.presentation.status.label = "pass".into();
@@ -71,7 +71,7 @@ fn usage_and_cli_status_follow_typed_outcomes_instead_of_display_wording() {
         assert_eq!(CheckStatus::from_check(&active), expected);
         assert_eq!(status(&active).label, label);
     }
-    let mut reported = result_check(2, CheckOutcome::Pass, CheckAssurance::Uncertified);
+    let mut reported = result_check(2, CheckOutcome::Pass, "standard");
     reported.operational_error = Some(CheckOperationalError::Canceled);
     reported.presentation.status.label = "checking".into();
     assert_eq!(CheckStatus::from_check(&reported), CheckStatus::Pass);
@@ -239,11 +239,7 @@ fn table_is_name_first_with_activity_and_only_shows_previous_results_when_useful
         !empty_history.contains("PREVIOUS"),
         "loaded but empty history needs no column"
     );
-    let mut previous = result_check(
-        9,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut previous = result_check(9, super_types::CheckOutcome::Fail, "standard");
     previous.revision.reported_git_commit = Some("a".repeat(40));
     results.rows[0].previous = Some(previous);
     for (width, height) in [(60, 24), (80, 24), (99, 36), (100, 36), (120, 36)] {
@@ -325,19 +321,13 @@ fn focused_check_without_history_has_one_identity_and_no_empty_history_controls(
 #[test]
 fn selected_result_keeps_explanation_and_evidence_and_expands_reproduction() {
     let mut results = results(2);
-    for assurance in [
-        super_types::CheckAssurance::Uncertified,
-        super_types::CheckAssurance::Certified,
-    ] {
+    for assurance in ["standard", "custom"] {
         let mut passed = result_check(1, super_types::CheckOutcome::Pass, assurance);
         passed.presentation.details.clear();
         results.rows[0].current = Some(passed);
         let frame = plain_frame(&mut Browser::new(&results), &results, 120, 36).join("\n");
-        assert!(frame.contains(if assurance == super_types::CheckAssurance::Certified {
-            "A certificate was accepted for this result."
-        } else {
-            "No problems found within this supertest."
-        }));
+        assert!(frame.contains("No problems found within this supertest."));
+        assert!(!frame.contains("certif"));
     }
     let mut blocked = check(1);
     blocked.terminal = true;
@@ -519,17 +509,13 @@ fn single_check_shows_history_immediately_and_expands_the_selected_attempt() {
 fn history_columns_align_mixed_results_and_date_every_attempt() {
     console::set_colors_enabled(true);
     let mut results = results(1);
-    let mut current = result_check(
-        10000,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut current = result_check(10000, super_types::CheckOutcome::Fail, "standard");
     current.created_at = Utc::now() - chrono::Duration::minutes(5) - chrono::Duration::seconds(15);
     let mut passed = current.clone();
     passed.number = 99;
     passed.created_at -= chrono::Duration::minutes(10);
     passed.result.as_mut().unwrap().outcome = super_types::CheckOutcome::Pass;
-    passed.result.as_mut().unwrap().assurance = super_types::CheckAssurance::Certified;
+    passed.result.as_mut().unwrap().assurance = "standard".into();
     let mut blocked = current.clone();
     blocked.number = 1;
     blocked.created_at -= chrono::Duration::minutes(20);
@@ -766,10 +752,13 @@ fn text_style(line: &str, text: &str) -> CellStyle {
     cells[start].1.clone()
 }
 
-fn result_check(number: u64, outcome: super_types::CheckOutcome, assurance: super_types::CheckAssurance) -> Check {
+fn result_check(number: u64, outcome: super_types::CheckOutcome, assurance: &str) -> Check {
     let mut check = check(number);
     check.terminal = true;
-    check.result = Some(super_types::CheckResult { outcome, assurance });
+    check.result = Some(super_types::CheckResult {
+        outcome,
+        assurance: assurance.into(),
+    });
     check.problematic = outcome == super_types::CheckOutcome::Fail;
     // Deliberately stale server presentation: clients must still color actual failures correctly.
     check.presentation.status.label = "fail (certifying…)".into();
@@ -780,15 +769,11 @@ fn result_check(number: u64, outcome: super_types::CheckOutcome, assurance: supe
 #[tokio::test]
 async fn noninteractive_observation_finishes_at_verdict_with_optional_updates_pending() {
     let mut results = results(1);
-    let mut verdict = result_check(
-        1,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut verdict = result_check(1, super_types::CheckOutcome::Fail, "standard");
     verdict.updates_pending = true;
     verdict.fix_pending = true;
     results.rows[0].current = Some(verdict);
-    let client = PupClient::new("http://127.0.0.1:1", None).unwrap();
+    let client = SuperClient::new("http://127.0.0.1:1", None).unwrap();
     let ui = Ui {
         json: false,
         interactive: false,
@@ -808,11 +793,7 @@ async fn result_watch_reconnects_after_verdict_and_receives_later_explanation() 
     use std::io::{BufRead, BufReader};
 
     let mut results = results(1);
-    let mut verdict = result_check(
-        1,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut verdict = result_check(1, super_types::CheckOutcome::Fail, "standard");
     verdict.updates_pending = true;
     results.rows[0].current = Some(verdict.clone());
     let mut explained = verdict.clone();
@@ -823,7 +804,7 @@ async fn result_watch_reconnects_after_verdict_and_receives_later_explanation() 
         emphasized: false,
     });
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let client = PupClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+    let client = SuperClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
     let snapshots = [verdict.clone(), explained.clone()];
     let server = std::thread::spawn(move || {
         for check in snapshots {
@@ -865,7 +846,7 @@ async fn result_watch_reconnects_after_verdict_and_receives_later_explanation() 
     })
     .await
     .unwrap();
-    assert_eq!(observed, [verdict, explained]);
+    assert_eq!(observed, [verdict.into_public_view(), explained.into_public_view()]);
     while let Some(task) = tasks.join_next().await {
         task.unwrap();
     }
@@ -876,16 +857,8 @@ async fn result_watch_reconnects_after_verdict_and_receives_later_explanation() 
 fn emitted_colors_bold_panel_padding_and_gutters_match_the_mock_palette() {
     console::set_colors_enabled(true);
     let mut results = results(2);
-    results.rows[0].current = Some(result_check(
-        1,
-        super_types::CheckOutcome::Pass,
-        super_types::CheckAssurance::Uncertified,
-    ));
-    results.rows[1].current = Some(result_check(
-        2,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    ));
+    results.rows[0].current = Some(result_check(1, super_types::CheckOutcome::Pass, "standard"));
+    results.rows[1].current = Some(result_check(2, super_types::CheckOutcome::Fail, "standard"));
     for (width, height) in [(80, 24), (120, 36)] {
         let mut browser = Browser::new(&results);
         let frame = browser.frame(&results, width, height, false);
@@ -971,10 +944,7 @@ fn one_queue_state_and_consistent_semantics_cover_every_result() {
     assert_eq!(activity(&active), "checking");
     active.presentation.status.label = "queued".into();
     assert_eq!(activity(&active), "queued");
-    for assurance in [
-        super_types::CheckAssurance::Uncertified,
-        super_types::CheckAssurance::Certified,
-    ] {
+    for assurance in ["standard", "custom"] {
         let failed = result_check(1, super_types::CheckOutcome::Fail, assurance);
         assert_eq!(status(&failed).ink, Ink::Fail);
         assert_eq!(status(&failed).marker, "×");
@@ -994,7 +964,7 @@ fn one_queue_state_and_consistent_semantics_cover_every_result() {
         };
         active.result = (label == "conditional").then_some(super_types::CheckResult {
             outcome: super_types::CheckOutcome::Conditional,
-            assurance: super_types::CheckAssurance::Uncertified,
+            assurance: "standard".into(),
         });
         assert_eq!(status(&active).ink, ink, "{label}");
     }
@@ -1011,10 +981,10 @@ fn one_queue_state_and_consistent_semantics_cover_every_result() {
 
 #[test]
 fn result_semantics_do_not_depend_on_labels_tones_or_explanations() {
-    use super_types::{CheckAssurance, CheckOutcome, PresentationTone};
+    use super_types::{CheckOutcome, PresentationTone};
 
     for outcome in [CheckOutcome::Pass, CheckOutcome::Fail, CheckOutcome::Conditional] {
-        for assurance in [CheckAssurance::Uncertified, CheckAssurance::Certified] {
+        for assurance in ["standard", "custom"] {
             let mut results = results(1);
             let current = result_check(1, outcome, assurance);
             let expected = status(&current);
@@ -1066,13 +1036,13 @@ fn labels_cannot_supply_a_missing_verdict_or_certification() {
 }
 
 #[test]
-fn counterexample_certification_comes_from_the_result_not_its_heading() {
+fn counterexample_heading_is_neutral_for_every_assurance() {
     let mut check = normalization_check(42);
     check.presentation.details[8].text = "Certified counterexample".into();
     assert!(!lines_text(&evidence(&check, EvidenceView::Summary, false)).contains("Certified counterexample"));
     check.presentation.details[8].text = "Counterexample".into();
-    check.result.as_mut().unwrap().assurance = super_types::CheckAssurance::Certified;
-    assert!(lines_text(&evidence(&check, EvidenceView::Summary, false)).contains("Certified counterexample"));
+    check.result.as_mut().unwrap().assurance = "standard".into();
+    assert!(!lines_text(&evidence(&check, EvidenceView::Summary, false)).contains("certif"));
 }
 
 #[test]
@@ -1096,11 +1066,7 @@ fn single_check_has_a_live_marker_timing_and_symmetric_panel() {
 
 #[test]
 fn evidence_preserves_headings_paragraphs_and_continuation_indentation() {
-    let mut check = result_check(
-        1,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut check = result_check(1, super_types::CheckOutcome::Fail, "standard");
     check.presentation.details = vec![
         super_types::PresentationLine {
             text: "Conclusion".into(),
@@ -1292,11 +1258,7 @@ fn a_single_selector_selects_the_attempt_when_background_history_arrives() {
 }
 
 fn normalization_check(number: u64) -> Check {
-    let mut check = result_check(
-        number,
-        super_types::CheckOutcome::Fail,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut check = result_check(number, super_types::CheckOutcome::Fail, "standard");
     check.supertest.path = "supertests/normalize_spaces.py".into();
     check.supertest.name = "normalizing_twice_changes_nothing".into();
     check.supertest.line = Some(5);
@@ -1347,7 +1309,7 @@ fn page_to_end(browser: &mut Browser, results: &Results, width: usize, height: u
 
 #[test]
 fn reported_results_keep_their_verdict_and_surface_operational_errors_in_overviews() {
-    use super_types::{CheckAssurance, CheckOperationalError, CheckOutcome};
+    use super_types::{CheckOperationalError, CheckOutcome};
 
     for outcome in [CheckOutcome::Pass, CheckOutcome::Fail, CheckOutcome::Conditional] {
         for (error, label) in [
@@ -1357,12 +1319,12 @@ fn reported_results_keep_their_verdict_and_surface_operational_errors_in_overvie
             (CheckOperationalError::MissingConclusion, "error"),
         ] {
             let mut results = results(2);
-            let mut reported = result_check(1, outcome, CheckAssurance::Uncertified);
+            let mut reported = result_check(1, outcome, "standard");
             reported.operational_error = Some(error);
             let verdict = status(&reported).label;
             let combined = format!("{verdict} · {label}");
             results.rows[0].current = Some(reported.clone());
-            results.rows[1].current = Some(result_check(2, CheckOutcome::Pass, CheckAssurance::Uncertified));
+            results.rows[1].current = Some(result_check(2, CheckOutcome::Pass, "standard"));
             for (width, height) in [(60, 20), (80, 24), (120, 36)] {
                 let mut browser = Browser::new(&results);
                 let frame = plain_frame(&mut browser, &results, width, height);
@@ -1397,15 +1359,20 @@ fn reported_results_keep_their_verdict_and_surface_operational_errors_in_overvie
 }
 
 #[test]
-fn activity_dots_keep_the_sentence_aligned_and_stop_with_the_live_view() {
+fn activity_dots_replace_the_final_period_and_stop_with_the_live_view() {
     let mut results = results(1);
-    for live in ["Roving... Analyzing the code...", "Roving… Analyzing the code..."] {
+    for live in [
+        "Checking how the parser handles empty input.",
+        "Checking whether café is accepted.",
+    ] {
         results.rows[0].current.as_mut().unwrap().presentation.live_line = Some(live.into());
         let check = results.rows[0].current.as_ref().unwrap();
-        for (tick, prefix) in [(0, "Roving.  "), (5, "Roving.. "), (10, "Roving..."), (15, "Roving.  ")] {
-            let expected = format!("{prefix} Analyzing the code...");
+        let sentence = live.strip_suffix('.').unwrap();
+        for (tick, dots) in [(0, ".  "), (5, ".. "), (10, "..."), (15, ".  ")] {
+            let expected = format!("{sentence}{dots}");
             let lines = presentation::evidence_with_tick(check, EvidenceView::Selected, false, Some(tick));
             assert_eq!(lines[0].text(), expected);
+            assert_eq!(lines[0].width(), measure_text_width(sentence) + 3);
             for (width, height) in [(60, 20), (80, 24), (120, 36)] {
                 let mut browser = Browser::new(&results);
                 browser.tick = tick;
@@ -1422,34 +1389,67 @@ fn activity_dots_keep_the_sentence_aligned_and_stop_with_the_live_view() {
     }
     for tick in [0, 5, 10, 15] {
         for plain in [
-            "Checking the source without a phase prefix.",
-            "Roving through the code.",
-            "An update: Roving... through the code.",
+            "Checking the source without punctuation",
+            "Can the parser accept empty input?",
+            "The check cannot continue!",
+            "An update... Checking the source.",
+            "Analyzing the code...",
+            "Analyzing the code…",
+            ".",
             "...",
             "…",
             "",
         ] {
-            assert_eq!(presentation::activity_sentence(plain, Some(tick)).text(), plain);
+            if plain == "An update... Checking the source." {
+                let expected = format!("An update... Checking the source{:<3}", ".".repeat((tick / 5) % 3 + 1));
+                assert_eq!(presentation::activity_sentence(plain, Some(tick)).text(), expected);
+            } else {
+                assert_eq!(presentation::activity_sentence(plain, Some(tick)).text(), plain);
+            }
         }
     }
     let check = results.rows[0].current.as_mut().unwrap();
     check.terminal = true;
     let finished = presentation::evidence_with_tick(check, EvidenceView::Selected, false, Some(10));
-    assert!(!lines_text(&finished).contains("Roving"));
+    assert!(!lines_text(&finished).contains("Checking whether café is accepted"));
+}
+
+#[test]
+fn activity_dots_keep_wrapping_fixed_near_the_sentence_end() {
+    for live in [
+        "Checking how the parser handles empty input.",
+        "Checking how the parser handles empty input, Unicode whitespace, and a trailing separator without losing any characters.",
+        "Checking whether café and 全角 characters are accepted.",
+        "Checking the parser_empty_input boundary.",
+    ] {
+        for width in 8..=120 {
+            let mut expected = None;
+            for tick in [0, 5, 10, 15] {
+                let lines = presentation::activity_sentence(live, Some(tick)).wrapped(width);
+                assert!(lines.iter().all(|line| line.width() <= width));
+                let layout: Vec<_> = lines
+                    .iter()
+                    .map(|line| line.text().trim_end_matches(['.', ' ']).to_owned())
+                    .collect();
+                if let Some(expected) = &expected {
+                    assert_eq!(&layout, expected, "width {width}, tick {tick}, {live:?}");
+                } else {
+                    expected = Some(layout);
+                }
+            }
+        }
+    }
 }
 
 #[test]
 fn complete_activity_sentences_stay_together_and_wrap_without_losing_words() {
     let mut results = results(1);
-    for (live, bold) in [
-        ("Roving... Checking how the parser handles empty input.", "Roving..."),
-        (
-            "Roving... Checking how the parser handles empty input, Unicode whitespace, and a trailing separator without losing any characters.",
-            "Roving...",
-        ),
-        ("Sniffing… through claim", "Sniffing…"),
-        ("Sketching...", "Sketching..."),
-        ("Checking the source without a phase prefix.", ""),
+    for live in [
+        "Checking how the parser handles empty input.",
+        "Checking how the parser handles empty input, Unicode whitespace, and a trailing separator without losing any characters.",
+        "Beginning direct analysis of the claim and code.",
+        "Preparing a proposed result.",
+        "Checking the source without a final full stop",
     ] {
         let check = results.rows[0].current.as_mut().unwrap();
         check.presentation.live_line = Some(live.into());
@@ -1463,21 +1463,21 @@ fn complete_activity_sentences_stay_together_and_wrap_without_losing_words() {
             let lines = evidence(check, EvidenceView::Selected, disconnected);
             assert_eq!(lines[0].text(), expected);
             assert_eq!(lines_text(&lines).matches(live).count(), 1);
-            let emphasized: String = lines[0]
-                .parts
-                .iter()
-                .filter(|(_, _, bold)| *bold)
-                .map(|(text, _, _)| text.as_str())
-                .collect();
-            assert_eq!(emphasized, bold, "only the phase word and ellipsis should be bold");
-            assert!(lines[0].parts.iter().all(|(_, ink, _)| *ink == Ink::Activity));
+            assert!(
+                lines[0]
+                    .parts
+                    .iter()
+                    .all(|(_, ink, bold)| *ink == Ink::Activity && !bold)
+            );
         }
         for width in [80, 120] {
             let mut browser = Browser::new(&results);
-            browser.tick = 10; // The fully visible three-dot frame.
+            browser.tick = 10;
             let frame = plain_frame(&mut browser, &results, width, 24);
             assert!(frame.iter().all(|line| measure_text_width(line) <= width));
-            let displayed = live.replacen('…', "...", 1);
+            let displayed = live
+                .strip_suffix('.')
+                .map_or_else(|| live.to_owned(), |sentence| format!("{sentence}..."));
             let text = frame.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(text.contains(&displayed), "{frame:#?}");
             if live.len() < 70 {
@@ -1578,7 +1578,7 @@ fn hidden_navigation_keys_do_nothing_and_history_actions_match_the_footer() {
 
 #[test]
 fn pending_fix_output_does_not_claim_active_preparation() {
-    use super_types::{CheckAssurance::Uncertified, CheckOutcome};
+    use super_types::CheckOutcome;
 
     let mut queued = check(1);
     queued.presentation.status.label = "queued".into();
@@ -1590,11 +1590,11 @@ fn pending_fix_output_does_not_claim_active_preparation() {
     for mut check in [
         queued,
         check(1),
-        result_check(1, CheckOutcome::Pass, Uncertified),
-        result_check(1, CheckOutcome::Conditional, Uncertified),
+        result_check(1, CheckOutcome::Pass, "standard"),
+        result_check(1, CheckOutcome::Conditional, "standard"),
         errored,
         finding,
-        result_check(1, CheckOutcome::Fail, Uncertified),
+        result_check(1, CheckOutcome::Fail, "standard"),
     ] {
         check.fix_pending = true;
         check.updates_pending = true;
@@ -1795,13 +1795,13 @@ fn unknown_or_partial_presentation_is_preserved_in_compact_output() {
 }
 
 #[test]
-fn compact_completion_omits_passes_regardless_of_explanation_and_counts_certification() {
+fn compact_completion_omits_passes_regardless_of_explanation_or_assurance() {
     let mut results = results(4);
     for row in &mut results.rows {
         let mut passed = result_check(
             row.current.as_ref().unwrap().number,
             super_types::CheckOutcome::Pass,
-            super_types::CheckAssurance::Uncertified,
+            "standard",
         );
         // Optional output can still be pending after a pass; it does not imply a fix is needed.
         passed.fix_pending = true;
@@ -1842,31 +1842,28 @@ fn compact_completion_omits_passes_regardless_of_explanation_and_counts_certific
         .result
         .as_mut()
         .unwrap()
-        .assurance = super_types::CheckAssurance::Certified;
-    let certified = lines_text(&presentation::snapshot(&results, false, false, 80));
-    assert!(certified.contains("3 passed (1 certified) · 1 failed"));
+        .assurance = "standard".into();
+    let varied_assurance = lines_text(&presentation::snapshot(&results, false, false, 80));
+    assert!(varied_assurance.contains("3 passed · 1 failed"));
+    assert!(!varied_assurance.contains("certif"));
     for row in &results.rows[1..] {
-        assert!(!certified.contains(&row.supertest.name));
+        assert!(!varied_assurance.contains(&row.supertest.name));
     }
-    assert!(!certified.contains("The function preserves every input value."));
-    assert!(!certified.contains('─'));
+    assert!(!varied_assurance.contains("The function preserves every input value."));
+    assert!(!varied_assurance.contains('─'));
     let full = lines_text(&presentation::snapshot(&results, false, true, 80));
     assert!(full.contains("The function preserves every input value."));
-    assert!(full.contains("pass (certified)"));
+    assert!(!full.contains("certif"));
     assert_eq!(full.matches(&"─".repeat(76)).count(), 3);
     results.rows.remove(0);
     let all_pass = presentation::snapshot(&results, false, false, 80);
     assert_eq!(all_pass.len(), 1);
-    assert!(all_pass[0].text().starts_with("✓ 3 supertests passed (1 certified)"));
+    assert!(all_pass[0].text().starts_with("✓ 3 supertests passed"));
 }
 
 #[test]
 fn unknown_pass_layouts_remain_complete_in_selected_panels_but_require_details_in_snapshots() {
-    let mut passed = result_check(
-        1,
-        super_types::CheckOutcome::Pass,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut passed = result_check(1, super_types::CheckOutcome::Pass, "standard");
     // A newer or differently formatted explanation must also stay out of compact output.
     passed.presentation.details = vec![super_types::PresentationLine {
         text:
@@ -1915,11 +1912,7 @@ fn unknown_pass_layouts_remain_complete_in_selected_panels_but_require_details_i
 #[test]
 fn selected_pass_shows_explanation_only_when_expanded() {
     console::set_colors_enabled(true);
-    let mut passed = result_check(
-        1,
-        super_types::CheckOutcome::Pass,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut passed = result_check(1, super_types::CheckOutcome::Pass, "standard");
     passed.presentation.details = [
         ("", false),
         ("Conclusion", true),
@@ -2002,7 +1995,7 @@ fn narrative_emphasis_depends_on_visible_explanation_across_result_states() {
             let mut check = normalization_check(42);
             check.result = outcome.map(|outcome| super_types::CheckResult {
                 outcome,
-                assurance: super_types::CheckAssurance::Uncertified,
+                assurance: "standard".into(),
             });
             check.operational_error = error;
             check.problematic = outcome.is_some_and(|outcome| outcome != CheckOutcome::Pass);
@@ -2054,11 +2047,7 @@ fn pass_compaction_does_not_hide_a_problem_error_or_unrecognized_multiline_headl
 #[test]
 fn omitting_pass_explanations_does_not_hide_operational_errors_or_reported_problems() {
     let mut results = results(2);
-    let mut passed = result_check(
-        1,
-        super_types::CheckOutcome::Pass,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let mut passed = result_check(1, super_types::CheckOutcome::Pass, "standard");
     passed.operational_error = Some(super_types::CheckOperationalError::Error);
     results.rows[0].current = Some(passed);
     let text = lines_text(&presentation::snapshot(&results, false, false, 80));
@@ -2171,11 +2160,7 @@ fn canceled_snapshots_are_concise_but_never_hide_existing_findings() {
     assert!(text.contains("Exact evidence\n\nMore evidence"), "{text}");
     assert!(text.contains("Details: super status --check 1 --details"));
 
-    let passed = result_check(
-        2,
-        super_types::CheckOutcome::Pass,
-        super_types::CheckAssurance::Uncertified,
-    );
+    let passed = result_check(2, super_types::CheckOutcome::Pass, "standard");
     results.rows.push(ScopeStatusRow {
         supertest: passed.supertest.clone(),
         current: Some(passed),
@@ -2193,11 +2178,7 @@ fn cancellation_tables_align_with_unicode_and_fall_back_on_narrow_terminals() {
     let canceled = results.rows[0].current.as_mut().unwrap();
     canceled.terminal = true;
     canceled.operational_error = Some(super_types::CheckOperationalError::Canceled);
-    results.rows[1].current = Some(result_check(
-        2,
-        super_types::CheckOutcome::Pass,
-        super_types::CheckAssurance::Certified,
-    ));
+    results.rows[1].current = Some(result_check(2, super_types::CheckOutcome::Pass, "standard"));
     results.rows[0].current.as_mut().unwrap().supertest.name = "unicode_界_law".into();
     results.rows[1].current.as_mut().unwrap().supertest.name = "another_long_supertest_name".into();
     results.rows[2].current.as_mut().unwrap().supertest.path = "other/test.py".into();
@@ -2217,7 +2198,8 @@ fn cancellation_tables_align_with_unicode_and_fall_back_on_narrow_terminals() {
         assert!(!text.contains("--run"));
         assert!(text.contains("other/test.py"));
         assert!(text.contains("1 canceled · 1 cancellation requested · 1 already finished"));
-        assert!(text.contains("pass (certified)"), "{text}");
+        assert!(text.contains("pass"), "{text}");
+        assert!(!text.contains("certif"), "{text}");
         assert_eq!(
             text.matches("already finished").count(),
             1,

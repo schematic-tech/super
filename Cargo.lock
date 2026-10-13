@@ -1166,58 +1166,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "super-tool"
-version = "0.9.1"
-dependencies = [
- "anyhow",
- "chrono",
- "chrono-tz",
- "clap",
- "console",
- "crossterm",
- "dialoguer",
- "directories",
- "fs2",
- "futures-util",
- "iana-time-zone",
- "ignore",
- "nix",
- "notify",
- "super-types",
- "regex",
- "reqwest",
- "semver",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tree-sitter",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-vhdl",
- "uuid",
-]
-
-[[package]]
-name = "super-types"
-version = "0.9.1"
-dependencies = [
- "base64",
- "chrono",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "ts-rs",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1677,6 +1625,58 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "super-tool"
+version = "0.10.2"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "console",
+ "crossterm",
+ "dialoguer",
+ "directories",
+ "fs2",
+ "futures-util",
+ "iana-time-zone",
+ "ignore",
+ "nix",
+ "notify",
+ "regex",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "super-types",
+ "tempfile",
+ "tokio",
+ "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-vhdl",
+ "uuid",
+]
+
+[[package]]
+name = "super-types"
+version = "0.10.2"
+dependencies = [
+ "base64",
+ "chrono",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "ts-rs",
+ "url",
+ "uuid",
+]
 
 [[package]]
 name = "syn"

@@ -1,6 +1,7 @@
 //! Types for Super API requests, results, source uploads, and events.
 
 pub mod credential;
+pub mod presentation;
 pub mod usage;
 
 use std::collections::BTreeSet;
@@ -501,7 +502,7 @@ pub struct CheckPresentation {
 #[serde(deny_unknown_fields)]
 pub struct CheckResult {
     pub outcome: CheckOutcome,
-    pub assurance: CheckAssurance,
+    pub assurance: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -510,13 +511,6 @@ pub enum CheckOutcome {
     Pass,
     Fail,
     Conditional,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CheckAssurance {
-    Certified,
-    Uncertified,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

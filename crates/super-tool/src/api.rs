@@ -87,7 +87,7 @@ pub fn is_retryable(error: &anyhow::Error) -> bool {
 }
 
 #[derive(Clone)]
-pub struct PupClient {
+pub struct SuperClient {
     base: String,
     credential: Credential,
     http: Client,
@@ -145,7 +145,7 @@ impl CheckEventStream {
     }
 }
 
-impl PupClient {
+impl SuperClient {
     pub fn new(base: &str, token: Option<&str>) -> Result<Self> {
         let routed = token
             .map(super_types::credential::RoutedKey::parse)
@@ -498,7 +498,7 @@ impl PupClient {
     ) -> Result<CheckSubmissionResponse> {
         // A stopping predecessor has not admitted this submission. Keep the same key throughout
         // the bounded wait, including recovery after interruption or a lost acceptance response.
-        let response = tokio::time::timeout(API_REQUEST_TIMEOUT, async {
+        let mut response = tokio::time::timeout(API_REQUEST_TIMEOUT, async {
             let mut waiting = false;
             loop {
                 match self
@@ -524,6 +524,9 @@ impl PupClient {
         .await
         .context("waiting for check acceptance timed out; run super check again to recover the same submission")??;
         validate_submission(&response, workspace_id)?;
+        for check in &mut response.checks {
+            check.normalize_presentation();
+        }
         Ok(response)
     }
 
@@ -536,16 +539,22 @@ impl PupClient {
         if let Some(selector) = selector {
             request = request.query(&[("selector", selector)]);
         }
-        let response = self.send(request).await?;
+        let mut response = self.send(request).await?;
         validate_submission(&response, workspace_id)?;
+        for check in &mut response.checks {
+            check.normalize_presentation();
+        }
         Ok(response)
     }
 
     pub async fn submission(&self, workspace_id: Uuid, id: Uuid) -> Result<CheckSubmissionResponse> {
-        let response: CheckSubmissionResponse = self.get(&api::check_submission(workspace_id, id)).await?;
+        let mut response: CheckSubmissionResponse = self.get(&api::check_submission(workspace_id, id)).await?;
         validate_submission(&response, workspace_id)?;
         if response.submission.id != id {
             bail!("server returned a different run UUID");
+        }
+        for check in &mut response.checks {
+            check.normalize_presentation();
         }
         Ok(response)
     }
@@ -566,8 +575,11 @@ impl PupClient {
         if let Some(before) = before {
             request = request.query(&[("before", before)]);
         }
-        let page: super_types::CheckHistoryPage = self.send(request).await?;
+        let mut page: super_types::CheckHistoryPage = self.send(request).await?;
         validate_history_page(&page, workspace_id, before)?;
+        for check in &mut page.checks {
+            check.normalize_presentation();
+        }
         Ok(page)
     }
 
@@ -576,7 +588,7 @@ impl PupClient {
         if check.repository_id != workspace_id || check.number != check_id || !valid_check_number(check.number) {
             bail!("server returned a different check identity");
         }
-        Ok(check)
+        Ok(check.into_public_view())
     }
 
     /// History is ordered by check number, newest first. Resolve each declaration once across
@@ -600,8 +612,9 @@ impl PupClient {
     }
 
     pub async fn fix(&self, workspace_id: Uuid, check_id: u64) -> Result<FixProposal> {
-        let fix: FixProposal = self.get(&api::fix(workspace_id, check_id)).await?;
+        let mut fix: FixProposal = self.get(&api::fix(workspace_id, check_id)).await?;
         fix.validate().map_err(anyhow::Error::msg)?;
+        fix.normalize_presentation();
         Ok(fix)
     }
 
@@ -659,7 +672,7 @@ impl PupClient {
         if check.repository_id != workspace_id || check.number != check_id || !valid_check_number(check.number) {
             bail!("server returned a different cancellation target");
         }
-        Ok(check)
+        Ok(check.into_public_view())
     }
 
     /// Observe the public stop condition, including work continuing after a result.
@@ -856,8 +869,9 @@ fn parse_check_event_frame(frame: &[u8]) -> Result<Option<CheckEvent>> {
     if data.is_empty() || event_kind.is_some_and(|kind| kind != "check") {
         return Ok(None);
     }
-    let event = serde_json::from_str::<CheckEvent>(&data.join("\n"))
+    let mut event = serde_json::from_str::<CheckEvent>(&data.join("\n"))
         .map_err(|_| anyhow::anyhow!("the Super event stream returned invalid check data"))?;
+    event.check.normalize_presentation();
     Ok(Some(event))
 }
 
@@ -1027,9 +1041,12 @@ mod tests {
     #[test]
     fn sse_parser_ignores_keepalives_and_decodes_public_event_envelopes() {
         assert!(parse_check_event_frame(b": keepalive").unwrap().is_none());
+        let mut legacy = check();
+        legacy.presentation.status.label = "certifying…".into();
+        legacy.presentation.live_line = Some("The result is uncertified.".into());
         let event = CheckEvent {
             sequence: 1,
-            check: check(),
+            check: legacy,
         };
         let frame = format!(
             "id: 3:now\nevent: check\ndata: {}",
@@ -1038,6 +1055,7 @@ mod tests {
         let event = parse_check_event_frame(frame.as_bytes()).unwrap().unwrap();
         assert_eq!(event.check.number, 3);
         assert_eq!(event.check.presentation.status.label, "checking");
+        assert_eq!(event.check.presentation.live_line, None);
     }
 
     #[test]
@@ -1064,7 +1082,7 @@ mod tests {
 
     #[test]
     fn empty_posts_advertise_their_zero_length() {
-        let client = PupClient::new("https://pup.example", None).unwrap();
+        let client = SuperClient::new("https://pup.example", None).unwrap();
         let request = client.empty_post("/verify").build().unwrap();
         assert_eq!(request.headers()[header::CONTENT_LENGTH], "0");
     }
@@ -1081,7 +1099,7 @@ mod tests {
         ] {
             let returned = serde_json::json!({"sha256": sha.repeat(64), "bytes": bytes, "stored_bytes": stored});
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let client = PupClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+            let client = SuperClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
             let revision_id = Uuid::new_v4();
             let plan: UploadPlan = serde_json::from_value(serde_json::json!({
                 "staged_upload_id": "reservation-specific-to-this-upload",
@@ -1132,12 +1150,12 @@ mod tests {
         }
     }
 
-    fn check_stream_fixture(checks: Vec<Check>) -> (PupClient, std::thread::JoinHandle<()>) {
+    fn check_stream_fixture(checks: Vec<Check>) -> (SuperClient, std::thread::JoinHandle<()>) {
         use std::fmt::Write as _;
         use std::io::{BufRead, BufReader, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let client = PupClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+        let client = SuperClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
         let mut body = String::new();
         for check in checks {
             let sequence = check.event_sequence;
@@ -1267,10 +1285,10 @@ mod tests {
 
     #[test]
     fn api_origins_require_tls_outside_loopback_and_cannot_carry_a_path() {
-        assert!(PupClient::validate_api_origin("https://pup.example").is_ok());
-        assert!(PupClient::validate_api_origin("http://127.0.0.1:8080").is_ok());
-        assert!(PupClient::validate_api_origin("http://pup.example").is_err());
-        assert!(PupClient::validate_api_origin("https://pup.example/api").is_err());
-        assert!(PupClient::validate_api_origin("https://user:pass@pup.example").is_err());
+        assert!(SuperClient::validate_api_origin("https://pup.example").is_ok());
+        assert!(SuperClient::validate_api_origin("http://127.0.0.1:8080").is_ok());
+        assert!(SuperClient::validate_api_origin("http://pup.example").is_err());
+        assert!(SuperClient::validate_api_origin("https://pup.example/api").is_err());
+        assert!(SuperClient::validate_api_origin("https://user:pass@pup.example").is_err());
     }
 }

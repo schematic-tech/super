@@ -5,7 +5,7 @@
 //! Unknown layouts fall back losslessly to the full presentation. Keep values as borrowed
 //! strings: a multiline witness must not be mistaken for another presentation record.
 
-use super_types::{Check, CheckAssurance, CheckOutcome, PresentationLine};
+use super_types::{Check, PresentationLine};
 
 use super::{
     presentation,
@@ -158,14 +158,7 @@ pub(super) fn details(check: &Check) -> Vec<Line> {
             if index > 0 {
                 lines.push(Line::default());
             }
-            let certified = check.result.as_ref().is_some_and(|result| {
-                result.outcome == CheckOutcome::Fail && result.assurance == CheckAssurance::Certified
-            });
-            lines.push(Line::default().bold(if certified {
-                "Certified counterexample"
-            } else {
-                "Counterexample"
-            }));
+            lines.push(Line::default().bold("Counterexample"));
             for (name, value) in ["witness", "expected", "observed"].into_iter().zip(evidence.values) {
                 lines.push(Line::new(format!("  {name:8} = {value}")));
             }

@@ -640,7 +640,7 @@ fn exact_status_is_read_only_and_findings_do_not_change_status_exit_code() {
     assert_eq!(value["data"]["rows"][0]["current"]["number"], 42);
     assert_eq!(value["data"]["problem_count"], 1);
     let check = &value["data"]["rows"][0]["current"];
-    assert_eq!(check["result"], json!({"outcome":"fail","assurance":"uncertified"}));
+    assert_eq!(check["result"], json!({"outcome":"fail","assurance":"standard"}));
     assert!(value["data"]["rows"][0]["current"].get("counterexamples").is_none());
     assert!(
         value["data"]["rows"][0]["current"]["presentation"]["details"][0]["text"]
@@ -1229,7 +1229,7 @@ mod terminal {
                     .get_mut(&format!("GET /v1/super/workspaces/{WORKSPACE}/check-submissions/{RUN}"))
                     .unwrap();
                 if active {
-                    submission["checks"][0]["presentation"]["live_line"] = json!("Roving... Analyzing the code.");
+                    submission["checks"][0]["presentation"]["live_line"] = json!("Analyzing the code.");
                 }
                 let mut second = submission["checks"][0].clone();
                 second["number"] = json!(43);
@@ -1296,11 +1296,12 @@ mod terminal {
                 thread::sleep(Duration::from_millis(10));
             }
             assert_eq!(tcgetattr(&slave).unwrap(), before, "terminal mode was not restored");
-            assert_eq!(text.contains("Roving"), active, "only active checks show activity");
-            assert!(
-                !text.contains('🐾'),
-                "activity uses animated dots rather than paw prints"
+            assert_eq!(
+                text.contains("Analyzing the code"),
+                active,
+                "only active checks show activity"
             );
+            assert!(!text.contains('🐾'), "activity contains no paw prints");
             for mode in [1000, 1002, 1003, 1006, 1015] {
                 assert!(
                     !text.contains(&format!("\x1b[?{mode}h")),

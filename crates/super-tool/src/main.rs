@@ -220,7 +220,7 @@ async fn apply_fix(
 }
 
 async fn resolve_fix_check(
-    client: &api::PupClient,
+    client: &api::SuperClient,
     workspace_id: Uuid,
     check_id: Option<u64>,
     target: Option<&str>,
@@ -336,7 +336,7 @@ async fn login(store: &StateStore, explicit_api: Option<&str>, ui: &Ui) -> Resul
         explicit_api,
         previous.credential_api_url.as_deref().or(previous.api_url.as_deref()),
     )?;
-    let client = api::PupClient::new(&api_url, Some(&token))?;
+    let client = api::SuperClient::new(&api_url, Some(&token))?;
     let identity = client
         .whoami()
         .await
@@ -345,7 +345,7 @@ async fn login(store: &StateStore, explicit_api: Option<&str>, ui: &Ui) -> Resul
     store.update(|state| {
         state.select_api(&api_url);
         state.credential_api_url = Some(api_url.clone());
-        state.credential = Some(CredentialSource::PupApiKey);
+        state.credential = Some(CredentialSource::SuperApiKey);
         Ok(())
     })?;
     daemon::ensure_daemon(store)?;
@@ -587,7 +587,7 @@ async fn start_checks(store: &StateStore, api_url: &str, options: StartCheckOpti
 }
 
 async fn observe_submission(
-    client: &api::PupClient,
+    client: &api::SuperClient,
     results: &mut Results,
     observation: Option<Observation>,
     ui: &Ui,
@@ -627,7 +627,7 @@ async fn observe_submission(
 }
 
 async fn submit_checks(
-    client: &api::PupClient,
+    client: &api::SuperClient,
     workspace: Uuid,
     request: &CreateChecksRequest,
     idempotency_key: &str,
@@ -802,7 +802,7 @@ async fn check_commit(
 }
 
 async fn latest_run_problems(
-    client: &api::PupClient,
+    client: &api::SuperClient,
     workspace: Uuid,
     selector: &str,
 ) -> Result<HashSet<(String, String)>> {
@@ -1035,7 +1035,7 @@ fn target_value(args: &cli::TargetArgs) -> Option<Target<'_>> {
         .or_else(|| args.selector.as_deref().map(Target::Selector))
 }
 
-fn authenticated_client(api_url: &str, state: &LocalState) -> Result<api::PupClient> {
+fn authenticated_client(api_url: &str, state: &LocalState) -> Result<api::SuperClient> {
     if state.api_url.as_deref().is_some_and(|saved| saved != api_url) {
         bail!("the active API environment changed during this command; retry the command")
     }
@@ -1046,7 +1046,7 @@ fn authenticated_client(api_url: &str, state: &LocalState) -> Result<api::PupCli
         return client_for_api_key(api_url, &token);
     }
     match state.credential {
-        Some(CredentialSource::PupApiKey) => {
+        Some(CredentialSource::SuperApiKey) => {
             let token = state_store_api_key(state)?;
             client_for_api_key(api_url, &token)
         }
@@ -1054,11 +1054,11 @@ fn authenticated_client(api_url: &str, state: &LocalState) -> Result<api::PupCli
     }
 }
 
-fn client_for_api_key(api_url: &str, token: &str) -> Result<api::PupClient> {
+fn client_for_api_key(api_url: &str, token: &str) -> Result<api::SuperClient> {
     if key_api_url(Some(token), None, Some(api_url))? != api_url {
         bail!("the saved API key changed environments during this command; retry the command")
     }
-    api::PupClient::new(api_url, Some(token))
+    api::SuperClient::new(api_url, Some(token))
 }
 
 fn state_store_api_key(_state: &LocalState) -> Result<String> {

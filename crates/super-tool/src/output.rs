@@ -33,7 +33,7 @@ use super_types::{Check, CheckSubmission, CheckSubmissionResponse, CommitRef, Fi
 use tokio::{sync::mpsc, task::JoinSet};
 use uuid::Uuid;
 
-use crate::{api::PupClient, config::LocalRepository};
+use crate::{api::SuperClient, config::LocalRepository};
 
 const TICKS: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -186,7 +186,7 @@ impl Results {
         command_selector(&self.repository_root, current, &self.selector)
     }
 
-    pub async fn load_history(&mut self, client: &PupClient, before: Option<u64>) -> Result<()> {
+    pub async fn load_history(&mut self, client: &SuperClient, before: Option<u64>) -> Result<()> {
         let page = client.history(self.workspace_id, Some(&self.selector), before).await?;
         if before.is_none() {
             self.history.clear();
@@ -803,7 +803,7 @@ async fn stream_initial_results(
 
 // Keep the event loop and its termination/cleanup conditions together.
 #[allow(clippy::too_many_lines)]
-pub async fn observe(client: &PupClient, results: &mut Results, mode: Observation, ui: &Ui) -> Result<bool> {
+pub async fn observe(client: &SuperClient, results: &mut Results, mode: Observation, ui: &Ui) -> Result<bool> {
     let watching = matches!(mode, Observation::Watch);
     let mut size = terminal::size().unwrap_or((80, 24));
     let interactive = ui.interactive && size.0 >= 60 && size.1 >= 20;
@@ -925,7 +925,7 @@ pub async fn observe(client: &PupClient, results: &mut Results, mode: Observatio
 }
 
 fn history_request(
-    client: &PupClient,
+    client: &SuperClient,
     results: &Results,
     before: Option<u64>,
 ) -> futures_util::future::BoxFuture<'static, Result<super_types::CheckHistoryPage>> {
@@ -977,7 +977,7 @@ fn shell_quote(value: &str) -> String {
 mod tests;
 
 fn spawn_watches(
-    client: &PupClient,
+    client: &SuperClient,
     results: &Results,
     sender: &mpsc::Sender<StreamMessage>,
     tasks: &mut JoinSet<()>,
@@ -1061,7 +1061,7 @@ fn spawn_watches(
 }
 
 fn initial_history(
-    client: &PupClient,
+    client: &SuperClient,
     results: &mut Results,
     interactive: bool,
 ) -> Option<futures_util::future::BoxFuture<'static, Result<super_types::CheckHistoryPage>>> {

@@ -5,7 +5,7 @@ use futures_util::{StreamExt, stream};
 use serde::Serialize;
 use super_types::{Check, CheckOperationalError};
 
-use crate::{api::PupClient, output::Results};
+use crate::{api::SuperClient, output::Results};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -73,7 +73,7 @@ fn confirmed(check: &Check) -> Outcome {
 }
 
 /// Mutate the report as requests finish, so interruption cannot hide partial success.
-pub async fn execute(client: &PupClient, results: &mut Results, entries: &mut [Entry]) {
+pub async fn execute(client: &SuperClient, results: &mut Results, entries: &mut [Entry]) {
     let targets: Vec<_> = entries
         .iter()
         .enumerate()

@@ -88,7 +88,8 @@ impl LocalState {
 #[serde(rename_all = "snake_case")]
 pub enum CredentialSource {
     /// A Schematic API key whose secret is stored in `api-key` with mode 0600.
-    PupApiKey,
+    #[serde(alias = "pup_api_key")]
+    SuperApiKey,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -377,6 +378,25 @@ mod tests {
         };
         fs::write(store.state_path(), br#"{"schema_version":1,"mystery":true}"#).unwrap();
         assert!(store.load().unwrap_err().to_string().contains("could not read"));
+    }
+
+    #[test]
+    fn local_state_migrates_the_former_saved_credential_name() {
+        let state: LocalState = serde_json::from_str(
+            r#"{
+                "schema_version": 1,
+                "api_url": "https://api.schematic.example",
+                "credential": "pup_api_key",
+                "credential_api_url": "https://api.schematic.example",
+                "repositories": []
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(state.credential, Some(CredentialSource::SuperApiKey));
+        let saved = serde_json::to_string(&state).unwrap();
+        assert!(saved.contains("super_api_key"));
+        assert!(!saved.contains("pup_api_key"));
     }
 
     #[cfg(unix)]
