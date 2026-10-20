@@ -27,6 +27,12 @@ bench = false
 super-types.workspace = true
 
 anyhow.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+httparse.workspace = true
+sha2.workspace = true
+url.workspace = true
+webbrowser.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 clap.workspace = true

@@ -48,7 +48,7 @@ pub async fn run(store: StateStore) -> Result<()> {
     record_process(&mut lock)?;
     loop {
         let state = store.load()?;
-        if state.repositories.is_empty() || state.credential != Some(CredentialSource::SuperApiKey) {
+        if state.repositories.is_empty() || state.credential.is_none() {
             return Ok(());
         }
         reconcile_all(&store).await?;
@@ -105,23 +105,29 @@ async fn reconcile_all(store: &StateStore) -> Result<()> {
     let Some(api_url) = state.api_url.as_deref() else {
         return Ok(());
     };
-    if state.credential != Some(CredentialSource::SuperApiKey) {
+    if state.credential.is_none() {
         return Ok(());
     }
-    let Some(token) = store.load_api_key()? else {
-        return Ok(());
+    let client = if state.credential == Some(CredentialSource::OAuth) {
+        let credential = crate::oauth::Credential::load(store)?;
+        if credential.api_url != api_url {
+            return Ok(());
+        }
+        SuperClient::with_session(api_url, store.clone())?
+    } else {
+        let Some(token) = store.load_api_key()? else {
+            return Ok(());
+        };
+        let credential_api = crate::key_api_url(
+            Some(&token),
+            None,
+            state.credential_api_url.as_deref().or(Some(api_url)),
+        )?;
+        if credential_api != api_url {
+            return Ok(());
+        }
+        SuperClient::new(api_url, Some(&token))?
     };
-    // A foreground command may temporarily use a key from another environment. Never
-    // reconcile that environment's links using the independently saved login credential.
-    let credential_api = crate::key_api_url(
-        Some(&token),
-        None,
-        state.credential_api_url.as_deref().or(Some(api_url)),
-    )?;
-    if credential_api != api_url {
-        return Ok(());
-    }
-    let client = SuperClient::new(api_url, Some(&token))?;
     for repository in state.repositories {
         let git = from_local(&repository);
         let Ok(head) = git.head() else {

@@ -5,6 +5,8 @@ mod config;
 mod daemon;
 mod discovery;
 mod git;
+mod login;
+mod oauth;
 mod output;
 mod updates;
 mod usage;
@@ -71,7 +73,7 @@ async fn run(cli: Cli, ui: &Ui) -> Result<u8> {
     let store = StateStore::discover()?;
     let api_url = if matches!(
         cli.command,
-        Command::Login | Command::Logout | Command::Unlink { .. } | Command::Daemon
+        Command::Login(_) | Command::Logout | Command::Unlink { .. } | Command::Daemon
     ) {
         String::new()
     } else {
@@ -80,8 +82,8 @@ async fn run(cli: Cli, ui: &Ui) -> Result<u8> {
         base
     };
     match cli.command {
-        Command::Login => login(&store, cli.api_url.as_deref(), ui).await?,
-        Command::Logout => logout(&store, ui)?,
+        Command::Login(args) => login::login(&store, cli.api_url.as_deref(), &args, ui).await?,
+        Command::Logout => login::logout(&store, ui).await?,
         Command::Link { path } => link_repository(&store, &api_url, &path, ui).await?,
         Command::Unlink { path } => unlink_repository(&store, path.as_deref(), ui)?,
         Command::Check(args) => return check_command(&store, &api_url, args, ui).await,
@@ -313,6 +315,15 @@ fn resolved_api_url(store: &StateStore, explicit: Option<&str>) -> Result<String
     let state = store.load()?;
     let token = if let Ok(token) = std::env::var("SUPER_ACCESS_TOKEN") {
         Some(token)
+    } else if state.credential == Some(CredentialSource::OAuth) {
+        let credential = oauth::Credential::load(store)?;
+        if let Some(explicit) = explicit {
+            anyhow::ensure!(
+                key_api_url(None, Some(explicit), None)? == credential.api_url,
+                "your saved login belongs to another API; run `super login` for the selected environment"
+            );
+        }
+        return Ok(credential.api_url);
     } else if state.credential.is_some() {
         store.load_api_key()?
     } else {
@@ -323,44 +334,6 @@ fn resolved_api_url(store: &StateStore, explicit: Option<&str>) -> Result<String
         explicit,
         state.credential_api_url.as_deref().or(state.api_url.as_deref()),
     )
-}
-
-async fn login(store: &StateStore, explicit_api: Option<&str>, ui: &Ui) -> Result<()> {
-    let token = std::env::var("SUPER_ACCESS_TOKEN")
-        .ok()
-        .filter(|token| !token.trim().is_empty())
-        .map_or_else(|| ui.api_key(), Ok)?;
-    let previous = store.load()?;
-    let api_url = key_api_url(
-        Some(&token),
-        explicit_api,
-        previous.credential_api_url.as_deref().or(previous.api_url.as_deref()),
-    )?;
-    let client = api::SuperClient::new(&api_url, Some(&token))?;
-    let identity = client
-        .whoami()
-        .await
-        .context("the API key was rejected; create a new key in Schematic Platform or contact support")?;
-    store.save_api_key(&token)?;
-    store.update(|state| {
-        state.select_api(&api_url);
-        state.credential_api_url = Some(api_url.clone());
-        state.credential = Some(CredentialSource::SuperApiKey);
-        Ok(())
-    })?;
-    daemon::ensure_daemon(store)?;
-    ui.success(format!("Logged in as {}", identity.email));
-    Ok(())
-}
-
-fn logout(store: &StateStore, ui: &Ui) -> Result<()> {
-    store.clear_api_key()?;
-    store.update(|state| {
-        state.credential = None;
-        Ok(())
-    })?;
-    ui.success("Logged out");
-    Ok(())
 }
 
 fn unlink_repository(store: &StateStore, path: Option<&Path>, ui: &Ui) -> Result<()> {
@@ -1046,6 +1019,7 @@ fn authenticated_client(api_url: &str, state: &LocalState) -> Result<api::SuperC
         return client_for_api_key(api_url, &token);
     }
     match state.credential {
+        Some(CredentialSource::OAuth) => api::SuperClient::with_session(api_url, StateStore::discover()?),
         Some(CredentialSource::SuperApiKey) => {
             let token = state_store_api_key(state)?;
             client_for_api_key(api_url, &token)

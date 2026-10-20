@@ -38,8 +38,8 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Authenticate super with your Schematic account.
-    Login,
-    /// Remove the locally stored credential.
+    Login(LoginArgs),
+    /// Sign out this CLI session, or remove a manually supplied API key locally.
     Logout,
     /// Link a Git worktree and synchronize its current commit.
     Link {
@@ -65,6 +65,16 @@ pub enum Command {
     Daemon,
     #[command(hide = true)]
     RefreshReleases { directory: PathBuf },
+}
+
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    /// Enter an API key instead of signing in with your browser. Reads stdin when piped.
+    #[arg(long, conflicts_with = "no_browser")]
+    pub api_key: bool,
+    /// Print the sign-in URL without opening it. The browser must run on this computer.
+    #[arg(long)]
+    pub no_browser: bool,
 }
 
 #[derive(Debug, Args)]

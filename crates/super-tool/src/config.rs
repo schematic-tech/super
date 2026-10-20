@@ -24,6 +24,8 @@ pub struct LocalState {
     pub credential: Option<CredentialSource>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_api_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_login_key: Option<Uuid>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub other_api_repositories: BTreeMap<String, ApiRepositories>,
     #[serde(default)]
@@ -39,6 +41,7 @@ impl Default for LocalState {
             api_url: None,
             credential: None,
             credential_api_url: None,
+            browser_login_key: None,
             other_api_repositories: BTreeMap::new(),
             repositories: Vec::new(),
             unlinked_repositories: Vec::new(),
@@ -90,6 +93,9 @@ pub enum CredentialSource {
     /// A Schematic API key whose secret is stored in `api-key` with mode 0600.
     #[serde(alias = "pup_api_key")]
     SuperApiKey,
+    /// A browser login with privately stored access and refresh tokens.
+    #[serde(rename = "oauth")]
+    OAuth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +205,22 @@ impl StateStore {
         open_private(&path)
     }
 
-    /// Stores the Schematic API key outside the ordinary JSON state document.  The file is replaced
+    pub fn credential_lock(&self) -> Result<File> {
+        self.try_credential_lock()?
+            .context("another super sign-in operation is already running")
+    }
+
+    pub fn try_credential_lock(&self) -> Result<Option<File>> {
+        self.ensure_directory()?;
+        let lock = open_private(&self.directory.join("credential.lock"))?;
+        match lock.try_lock_exclusive() {
+            Ok(()) => Ok(Some(lock)),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error).context("could not lock your saved login"),
+        }
+    }
+
+    /// Stores the Super API key outside the ordinary JSON state document.  The file is replaced
     /// atomically and is private to the current user.
     pub fn save_api_key(&self, value: &str) -> Result<()> {
         if value.trim().is_empty() || value.chars().any(char::is_control) {
@@ -233,7 +254,7 @@ impl StateStore {
                 use std::os::unix::fs::PermissionsExt;
                 if metadata.permissions().mode() & 0o077 != 0 {
                     anyhow::bail!(
-                        "stored Schematic API key {} is readable by another user; run `super login` again",
+                        "saved Schematic login {} is readable by another user; run `super login` again",
                         path.display()
                     )
                 }
@@ -243,12 +264,12 @@ impl StateStore {
             Ok(value) => {
                 let value = value.trim().to_owned();
                 if value.is_empty() || value.chars().any(char::is_control) {
-                    anyhow::bail!("the stored Schematic API key is invalid; run `super logout` then `super login`")
+                    anyhow::bail!("the saved Schematic login is invalid; run `super login` again")
                 }
                 Ok(Some(value))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).with_context(|| "could not read the stored Schematic API key"),
+            Err(error) => Err(error).with_context(|| "could not read your saved Schematic login"),
         }
     }
 

@@ -288,7 +288,13 @@ fn c_declarations(source: &str) -> Result<Vec<(String, u32)>> {
     }
     let parsed_source = String::from_utf8(parsed_source).expect("replacing ASCII C markers preserves UTF-8");
     let language = tree_sitter_c::LANGUAGE.into();
-    let tree = parse_tree(&language, &parsed_source)?;
+    // C collection libraries commonly expose iteration as macros that expand to a
+    // control-flow statement. Before preprocessing, tree-sitter represents forms
+    // such as `LL_FOREACH(head, node) { ... }` as an error inside the function body.
+    // Discovery only needs the file-scoped function declaration; semantic checking
+    // handles the body later, so tolerate body-local macro errors while retaining
+    // syntax validation for top-level declarations and function headers.
+    let tree = parse_c_tree(&language, &parsed_source)?;
     let root = tree.root_node();
     let mut declarations = Vec::new();
     for function in named_children(root).filter(|node| node.kind() == "function_definition") {
@@ -312,6 +318,45 @@ fn c_declarations(source: &str) -> Result<Vec<(String, u32)>> {
         ));
     }
     Ok(declarations)
+}
+
+fn parse_c_tree(language: &tree_sitter::Language, source: &str) -> Result<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(language)
+        .context("could not load the source-language grammar")?;
+    let tree = parser
+        .parse(source, None)
+        .context("the source parser stopped before producing a syntax tree")?;
+    if !tree.root_node().has_error() || !c_has_top_level_syntax_error(tree.root_node()) {
+        return Ok(tree);
+    }
+    bail!("the selected source contains syntax errors")
+}
+
+fn c_has_top_level_syntax_error(root: tree_sitter::Node<'_>) -> bool {
+    let mut cursor = root.walk();
+    root.named_children(&mut cursor).any(|child| {
+        if child.kind() == "function_definition" {
+            let body = child.child_by_field_name("body");
+            return c_has_syntax_error_outside(child, body);
+        }
+        child.has_error()
+    })
+}
+
+fn c_has_syntax_error_outside(node: tree_sitter::Node<'_>, excluded: Option<tree_sitter::Node<'_>>) -> bool {
+    if node.is_error() || node.is_missing() {
+        return true;
+    }
+    let mut cursor = node.walk();
+    node.children(&mut cursor).any(|child| {
+        if excluded.is_some_and(|excluded| child == excluded) {
+            false
+        } else {
+            c_has_syntax_error_outside(child, excluded)
+        }
+    })
 }
 
 fn c_marker_ranges(source: &str) -> Vec<std::ops::Range<usize>> {
@@ -542,6 +587,31 @@ SUPERTEST void preserves_zero(void) {}
                 .map(|(name, _)| name)
                 .collect::<Vec<_>>(),
             ["accepts_positive_values", "preserves_zero"]
+        );
+    }
+
+    #[test]
+    fn accepts_macro_generated_control_flow_in_c_supertests() {
+        let source = r"
+SUPERTEST void list_claim(void *head, void *node) {
+    LL_FOREACH(head, node) {
+        node = head;
+    }
+}
+
+SUPERTEST void hash_claim(void *head, void *node) {
+    HASH_ITER(destination_handle, head, node, node) {
+        node = head;
+    }
+}
+";
+        assert_eq!(
+            c_declarations(source)
+                .unwrap()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
+            ["list_claim", "hash_claim"]
         );
     }
 

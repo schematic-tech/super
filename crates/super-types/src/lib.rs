@@ -1,6 +1,7 @@
 //! Types for Super API requests, results, source uploads, and events.
 
 pub mod credential;
+pub mod login;
 pub mod presentation;
 pub mod usage;
 
@@ -18,6 +19,9 @@ pub const MAX_SUPERTESTS_PER_SUBMISSION: usize = 128;
 pub mod api {
     pub const EXHAUSTED_ERROR_CODE: &str = "exhausted";
     pub const AUTH_WHOAMI: &str = "/v1/super/auth/whoami";
+    pub const CLI_OAUTH_START: &str = "/v1/super/auth/cli/oauth/start";
+    pub const CLI_TOKEN: &str = "/v1/super/auth/cli/token";
+    pub const CLI_REVOKE: &str = "/v1/super/auth/cli/revoke";
     pub const USAGE: &str = "/v1/super/usage";
     pub const WORKSPACES: &str = "/v1/super/workspaces";
 

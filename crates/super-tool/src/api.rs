@@ -107,6 +107,7 @@ pub enum SourceProgress {
 enum Credential {
     Anonymous,
     Bearer(Arc<str>),
+    Session { store: crate::config::StateStore, id: Uuid },
 }
 
 pub struct CheckEventStream {
@@ -146,7 +147,27 @@ impl CheckEventStream {
 }
 
 impl SuperClient {
+    pub fn with_session(base: &str, store: crate::config::StateStore) -> Result<Self> {
+        let credential = crate::oauth::Credential::load(&store)?;
+        anyhow::ensure!(
+            credential.api_url == base,
+            "your saved login belongs to another API; run `super login` again"
+        );
+        Self::with_credential(
+            base,
+            Credential::Session {
+                store,
+                id: credential.session_id,
+            },
+        )
+    }
+
     pub fn new(base: &str, token: Option<&str>) -> Result<Self> {
+        // An interrupted login must never send the private session document as a bearer key.
+        anyhow::ensure!(
+            token.is_none_or(|token| !token.trim_start().starts_with('{')),
+            "your saved login changed; run `super login` again"
+        );
         let routed = token
             .map(super_types::credential::RoutedKey::parse)
             .transpose()
@@ -194,8 +215,7 @@ impl SuperClient {
             .query(query)
             .timeout(Duration::from_secs(25));
         let response = self
-            .authorize(request)
-            .send()
+            .send_authenticated(request)
             .await
             .context("could not load token usage; retry `super usage`")?;
         if response.status() == StatusCode::UNAUTHORIZED {
@@ -758,7 +778,7 @@ impl SuperClient {
     }
 
     async fn checked_response(&self, request: RequestBuilder) -> Result<Response> {
-        let response = tokio::time::timeout(API_REQUEST_TIMEOUT, self.authorize(request).send())
+        let response = tokio::time::timeout(API_REQUEST_TIMEOUT, self.send_authenticated(request))
             .await
             .context("the Super API request timed out")?
             .with_context(|| format!("could not reach the Super API at {}", self.base))?;
@@ -778,10 +798,22 @@ impl SuperClient {
         Err(ServiceError { status, body }.into())
     }
 
-    fn authorize(&self, request: RequestBuilder) -> RequestBuilder {
+    async fn send_authenticated(&self, request: RequestBuilder) -> Result<Response> {
         match &self.credential {
-            Credential::Anonymous => request,
-            Credential::Bearer(token) => request.bearer_auth(token),
+            Credential::Anonymous => Ok(request.send().await?),
+            Credential::Bearer(token) => Ok(request.bearer_auth(token).send().await?),
+            Credential::Session { store, id } => {
+                let token = crate::oauth::access_token(store, &self.base, *id, None).await?;
+                let retry = request.try_clone();
+                let response = request.bearer_auth(&token).send().await?;
+                if response.status() == StatusCode::UNAUTHORIZED
+                    && let Some(retry) = retry
+                {
+                    let token = crate::oauth::access_token(store, &self.base, *id, Some(&token)).await?;
+                    return Ok(retry.bearer_auth(token).send().await?);
+                }
+                Ok(response)
+            }
         }
     }
 
