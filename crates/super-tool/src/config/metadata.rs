@@ -165,7 +165,6 @@ pub(super) fn load(store: &StateStore) -> Result<(Option<Profile>, LocalState)> 
                 association_id: link.association_id,
                 workspace_id: link.workspace_id,
                 name: link.name,
-                _legacy_dirty_preference: None,
                 last_seen_oid: link.last_seen_oid,
                 temporary_commits: shared.temporary_commits.clone(),
                 source_hashes: shared.source_hashes.clone(),

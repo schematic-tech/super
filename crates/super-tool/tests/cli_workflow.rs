@@ -581,7 +581,14 @@ impl Fixture {
             .current_dir(self.directory.path().join("repo"))
             .env("SUPER_CONFIG_DIR", self.directory.path().join("config"))
             .env("SUPER_API_URL", &self.service.origin)
-            .env("SUPER_ACCESS_TOKEN", "fixture-token")
+            .env(
+                "SUPER_ACCESS_TOKEN",
+                super_types::credential::RoutedKey {
+                    id: uuid::Uuid::nil(),
+                    api_base: super_types::credential::ApiBase::parse(&self.service.origin).unwrap(),
+                }
+                .encode(&[42; 32]),
+            )
             .env("SUPER_NO_DAEMON", "1")
             .env("NO_COLOR", "1");
         command
@@ -1177,13 +1184,10 @@ fn discovery_does_not_suggest_dirty_when_working_source_is_already_selected() {
 }
 
 #[test]
-fn dirty_noninteractive_checks_require_a_flag_even_with_a_legacy_answer() {
-    for previous in [Value::Null, json!(true), json!(false)] {
+fn dirty_noninteractive_checks_require_an_explicit_flag() {
+    for _ in 0..1 {
         let fixture = Fixture::new(false);
         let state_path = fixture.directory.path().join("config/state.json");
-        let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-        state["repositories"][0]["dirty_preference"] = previous;
-        fs::write(&state_path, state.to_string()).unwrap();
         fs::write(
             fixture.directory.path().join("repo/test.py"),
             format!("{SOURCE}# local edit\n"),
@@ -2003,13 +2007,9 @@ mod terminal {
     }
 
     #[test]
-    fn dirty_confirmation_ignores_legacy_answers_and_does_not_remember_acceptance() {
-        for previous in [Value::Null, json!(true), json!(false)] {
+    fn dirty_confirmation_does_not_remember_acceptance() {
+        for _ in 0..1 {
             let fixture = Fixture::new(false);
-            let state_path = fixture.directory.path().join("config/state.json");
-            let mut state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-            state["repositories"][0]["dirty_preference"] = previous;
-            fs::write(&state_path, state.to_string()).unwrap();
             let root = fixture.directory.path().join("repo");
             let changed = format!("{SOURCE}# local edit\n");
             fs::write(root.join("test.py"), &changed).unwrap();

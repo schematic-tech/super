@@ -234,7 +234,14 @@ impl Fixture {
             .args(args)
             .env("SUPER_CONFIG_DIR", self.directory.path().join("profile"))
             .env("SUPER_API_URL", &self.url)
-            .env("SUPER_ACCESS_TOKEN", "test-key")
+            .env(
+                "SUPER_ACCESS_TOKEN",
+                super_types::credential::RoutedKey {
+                    id: uuid::Uuid::nil(),
+                    api_base: super_types::credential::ApiBase::parse(&self.url).unwrap(),
+                }
+                .encode(&[42; 32]),
+            )
             .env("SUPER_NO_DAEMON", "1")
             .current_dir(directory)
             .output()

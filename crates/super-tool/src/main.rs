@@ -292,10 +292,10 @@ fn verify_fix_scope(
 fn key_api_url(token: Option<&str>, explicit: Option<&str>, saved: Option<&str>) -> Result<String> {
     use super_types::credential::{ApiBase, RoutedKey};
     let routed = token
+        .filter(|value| value.starts_with("super_v") || value.starts_with("pup_v"))
         .map(RoutedKey::parse)
         .transpose()
-        .map_err(anyhow::Error::msg)?
-        .flatten();
+        .map_err(anyhow::Error::msg)?;
     if let Some(key) = routed {
         if let Some(explicit) = explicit {
             let explicit = ApiBase::parse(explicit).map_err(anyhow::Error::msg)?;
@@ -423,7 +423,6 @@ async fn link_repository(store: &StateStore, api_url: &str, path: &Path, ui: &Ui
             association_id,
             workspace_id: workspace.id,
             name: git.name.clone(),
-            _legacy_dirty_preference: None,
             last_seen_oid: Some(head.oid.clone()),
             temporary_commits: prior
                 .as_ref()
@@ -707,7 +706,7 @@ fn submission_idempotency(
         if repository.pending_submissions.len() >= MAX_PENDING_SUBMISSIONS {
             bail!("too many unresolved check submissions\n  Retry the earlier commands before starting another check.")
         }
-        let idempotency_key = format!("pup-check:{}", Uuid::new_v4());
+        let idempotency_key = format!("super-check:{}", Uuid::new_v4());
         repository.pending_submissions.push(config::PendingSubmission {
             request_sha256: request_identity,
             idempotency_key: idempotency_key.clone(),
@@ -1087,8 +1086,8 @@ mod tests {
         );
         assert!(key_api_url(Some(&key), Some(DEFAULT_API_URL), None).is_err());
         assert_eq!(
-            key_api_url(Some("pup_live_legacy"), None, Some("https://legacy.example.test")).unwrap(),
-            "https://legacy.example.test"
+            key_api_url(Some("pup_live_legacy"), None, Some("https://old.example.test")).unwrap(),
+            "https://old.example.test"
         );
         assert!(key_api_url(Some("pup_v2.invalid"), None, None).is_err());
     }

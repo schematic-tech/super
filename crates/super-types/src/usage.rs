@@ -163,12 +163,12 @@ pub struct UsageReport {
 pub struct TokenQuota {
     pub as_of: DateTime<Utc>,
     pub window_start: DateTime<Utc>,
-    #[cfg_attr(feature = "typescript", ts(type = "number | null"))]
-    pub limit: Option<u64>,
+    #[cfg_attr(feature = "typescript", ts(type = "number"))]
+    pub limit: u64,
     #[cfg_attr(feature = "typescript", ts(type = "number"))]
     pub used: u64,
-    #[cfg_attr(feature = "typescript", ts(type = "number | null"))]
-    pub remaining: Option<u64>,
+    #[cfg_attr(feature = "typescript", ts(type = "number"))]
+    pub remaining: u64,
     pub exhausted: bool,
     pub next_available_at: Option<DateTime<Utc>>,
 }

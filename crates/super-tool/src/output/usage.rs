@@ -157,14 +157,8 @@ fn quota_lines(lines: &mut Vec<Line>, quota: Option<&TokenQuota>, timezone: Tz) 
         lines.push(Line::default().muted("Quota unavailable."));
         return;
     };
-    let Some(limit) = quota.limit else {
-        lines.push(Line::default().bold("Unlimited"));
-        return;
-    };
-    let Some(remaining) = quota.remaining else {
-        lines.push(Line::default().muted("Quota unavailable."));
-        return;
-    };
+    let limit = quota.limit;
+    let remaining = quota.remaining;
     let remaining = remaining.min(limit);
     let percent = if limit == 0 {
         0

@@ -169,10 +169,10 @@ impl SuperClient {
             "your saved login changed; run `super login` again"
         );
         let routed = token
+            .filter(|value| value.starts_with("super_v") || value.starts_with("pup_v"))
             .map(super_types::credential::RoutedKey::parse)
             .transpose()
-            .map_err(anyhow::Error::msg)?
-            .flatten();
+            .map_err(anyhow::Error::msg)?;
         let base = routed.as_ref().map_or(base, |key| key.api_base.as_str());
         let credential = token.map_or(Credential::Anonymous, |token| Credential::Bearer(Arc::from(token)));
         Self::with_credential(base, credential)
@@ -257,7 +257,7 @@ impl SuperClient {
             Method::POST,
             api::WORKSPACES,
             &CreateWorkspace { name: name.to_owned() },
-            &format!("pup-link:{association_id}"),
+            &format!("super-link:{association_id}"),
         )
         .await
     }

@@ -26,12 +26,16 @@ fn login(profile: &TempDir, key: &str, extra: &[&str]) -> Output {
 fn endpoint_with_prefix(count: usize, prefix: &str) -> (String, String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let key = RoutedKey {
-        id: Uuid::new_v4(),
-        api_base: ApiBase::parse(&base).unwrap(),
-    }
-    .encode(&[0x23; 32])
-    .replacen("super_v2", prefix, 1);
+    let key = if prefix.ends_with("_live") {
+        format!("{prefix}_{}_{}", Uuid::new_v4().simple(), "23".repeat(32))
+    } else {
+        RoutedKey {
+            id: Uuid::new_v4(),
+            api_base: ApiBase::parse(&base).unwrap(),
+        }
+        .encode(&[0x23; 32])
+        .replacen("super_v2", prefix, 1)
+    };
     let expected = key.clone();
     let server = thread::spawn(move || {
         for _ in 0..count {
@@ -73,6 +77,18 @@ fn legacy_routed_key_keeps_its_origin_and_exact_bearer_value() {
     assert!(output.status.success(), "{output:?}");
     server.join().unwrap();
     assert_eq!(std::fs::read_to_string(profile.path().join("api-key")).unwrap(), key);
+}
+
+#[test]
+fn existing_unrouted_keys_use_the_selected_origin_and_keep_their_secret() {
+    for prefix in ["pup_live", "hydra_live"] {
+        let profile = TempDir::new().unwrap();
+        let (origin, key, server) = endpoint_with_prefix(1, prefix);
+        let output = login(&profile, &key, &["--api-url", &origin]);
+        assert!(output.status.success(), "{output:?}");
+        server.join().unwrap();
+        assert_eq!(std::fs::read_to_string(profile.path().join("api-key")).unwrap(), key);
+    }
 }
 
 #[test]

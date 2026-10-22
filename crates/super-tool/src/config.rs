@@ -111,9 +111,6 @@ pub struct LocalRepository {
     pub association_id: String,
     pub workspace_id: Uuid,
     pub name: String,
-    // Read older state files without applying or writing their saved prompt answer.
-    #[serde(default, skip_serializing, rename = "dirty_preference")]
-    pub _legacy_dirty_preference: Option<bool>,
     #[serde(default)]
     pub last_seen_oid: Option<String>,
     #[serde(default)]
@@ -460,7 +457,6 @@ mod tests {
             association_id: root.into(),
             workspace_id: Uuid::nil(),
             name: "repo".into(),
-            _legacy_dirty_preference: None,
             last_seen_oid: None,
             temporary_commits: HashMap::new(),
             source_hashes: HashMap::new(),
@@ -486,7 +482,6 @@ mod tests {
             association_id: "association".into(),
             workspace_id: Uuid::nil(),
             name: "repo".into(),
-            _legacy_dirty_preference: None,
             last_seen_oid: None,
             temporary_commits: HashMap::new(),
             source_hashes: HashMap::new(),

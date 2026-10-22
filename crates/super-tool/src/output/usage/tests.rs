@@ -98,22 +98,15 @@ fn report_has_compact_tables_and_separates_bold_context_from_muted_headings() {
 fn quota_states_preserve_unknowns_and_use_recovery_times_in_the_selected_timezone() {
     let mut data = report();
     let quota = data.quota.as_mut().unwrap();
-    quota.limit = None;
-    quota.remaining = None;
+    quota.limit = 1_000;
     let mut lines = Vec::new();
-    quota_lines(&mut lines, Some(quota), chrono_tz::UTC);
-    assert_eq!(text(&lines), "Unlimited");
-    quota.limit = Some(1_000);
-    lines.clear();
-    quota_lines(&mut lines, Some(quota), chrono_tz::UTC);
-    assert_eq!(text(&lines), "Quota unavailable.");
     for (remaining, ink, label) in [
         (201, Ink::Pass, "20%"),
         (51, Ink::Warning, "5%"),
         (50, Ink::Fail, "5%"),
         (1, Ink::Fail, "<1%"),
     ] {
-        quota.remaining = Some(remaining);
+        quota.remaining = remaining;
         lines.clear();
         quota_lines(&mut lines, Some(quota), chrono_tz::UTC);
         assert!(
@@ -123,8 +116,8 @@ fn quota_states_preserve_unknowns_and_use_recovery_times_in_the_selected_timezon
                 .any(|(value, tone, bold)| value.contains(label) && *tone == ink && *bold)
         );
     }
-    quota.limit = Some(0);
-    quota.remaining = Some(0);
+    quota.limit = 0;
+    quota.remaining = 0;
     quota.exhausted = true;
     lines.clear();
     quota_lines(&mut lines, Some(quota), chrono_tz::Australia::Sydney);
@@ -202,5 +195,15 @@ fn narrow_tables_wrap_long_unicode_names_and_sanitize_terminal_controls() {
                 .replace("supertest · ", "")
         };
         assert_eq!(first_column, "支付_very_long_supertest_with_details");
+    }
+}
+
+#[test]
+fn quotas_require_finite_numeric_limits_and_balances() {
+    let quota = serde_json::to_value(report().quota.unwrap()).unwrap();
+    for field in ["limit", "remaining"] {
+        let mut invalid = quota.clone();
+        invalid[field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<TokenQuota>(invalid).is_err());
     }
 }

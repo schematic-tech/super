@@ -714,7 +714,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_routes_use_the_versioned_pup_namespace() {
+    fn client_routes_use_the_versioned_super_namespace() {
         let id = Uuid::nil();
         assert_eq!(api::AUTH_WHOAMI, "/v1/super/auth/whoami");
         assert_eq!(api::WORKSPACES, "/v1/super/workspaces");

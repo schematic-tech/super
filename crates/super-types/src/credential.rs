@@ -55,14 +55,11 @@ pub struct RoutedKey {
 }
 
 impl RoutedKey {
-    /// Recognizes versioned keys; legacy credentials return `None` for migration compatibility.
+    /// Parses current and previously issued routed API keys.
     ///
     /// # Errors
     /// Rejects malformed or unsupported versioned keys without echoing their contents.
-    pub fn parse(value: &str) -> Result<Option<Self>, &'static str> {
-        if !value.starts_with("super_v") && !value.starts_with("pup_v") {
-            return Ok(None);
-        }
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
         let invalid = "the Schematic API key is malformed or uses an unsupported version";
         if value.len() > 1024 {
             return Err(invalid);
@@ -84,10 +81,10 @@ impl RoutedKey {
         if api_base.as_str() != origin {
             return Err(invalid);
         }
-        Ok(Some(Self {
+        Ok(Self {
             id: Uuid::parse_str(id).map_err(|_| invalid)?,
             api_base,
-        }))
+        })
     }
 
     /// Encodes a key using 256 independently generated random secret bits supplied by the issuer.
@@ -118,15 +115,15 @@ mod tests {
                 api_base: ApiBase::parse(origin).unwrap(),
             };
             let key = metadata.encode(&[0xab; 32]);
-            assert_eq!(RoutedKey::parse(&key).unwrap(), Some(metadata.clone()));
+            assert_eq!(RoutedKey::parse(&key).unwrap(), metadata.clone());
             let legacy = key.replacen("super_v2.", "pup_v2.", 1);
-            assert_eq!(RoutedKey::parse(&legacy).unwrap(), Some(metadata));
+            assert_eq!(RoutedKey::parse(&legacy).unwrap(), metadata);
             assert!(RoutedKey::parse(&format!("{key}.extra")).is_err());
             assert!(RoutedKey::parse(&key[..key.len() - 1]).is_err());
             assert!(!format!("{:?}", RoutedKey::parse(&key).unwrap()).contains(&hex::encode([0xab; 32])));
         }
-        assert!(RoutedKey::parse("pup_live_legacy").unwrap().is_none());
-        assert!(RoutedKey::parse("hydra_live_legacy").unwrap().is_none());
+        assert!(RoutedKey::parse("pup_live_legacy").is_err());
+        assert!(RoutedKey::parse("hydra_live_legacy").is_err());
         assert!(RoutedKey::parse("pup_v3.unknown").is_err());
         assert!(RoutedKey::parse("super_v3.unknown").is_err());
     }

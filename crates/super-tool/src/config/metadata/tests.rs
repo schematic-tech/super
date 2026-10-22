@@ -54,7 +54,6 @@ impl Fixture {
             association_id: Uuid::new_v4().to_string(),
             workspace_id: Uuid::new_v4(),
             name: git.name.clone(),
-            _legacy_dirty_preference: None,
             last_seen_oid: Some("a".repeat(40)),
             temporary_commits: HashMap::from([("parent:tree".into(), "a".repeat(40))]),
             source_hashes: HashMap::from([("blob".into(), "b".repeat(64))]),
