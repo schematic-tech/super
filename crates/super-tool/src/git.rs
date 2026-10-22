@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::OsStr,
+    fmt,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
@@ -66,9 +67,44 @@ struct TreeFile {
     oid: String,
     bytes: u64,
     executable: bool,
+    symlink_target: Option<String>,
+}
+
+#[derive(Debug)]
+struct InvalidSourceLinks(Vec<super_types::SourceLinkIssue>);
+
+impl fmt::Display for InvalidSourceLinks {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let plural = if self.0.len() == 1 { "" } else { "s" };
+        write!(formatter, "source contains {} invalid symlink{plural}:", self.0.len())?;
+        for issue in &self.0 {
+            write!(formatter, "\n  {issue}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for InvalidSourceLinks {}
+
+fn source_link_exclusions(error: anyhow::Error) -> anyhow::Error {
+    let Some(issues) = error.downcast_ref::<InvalidSourceLinks>() else {
+        return error;
+    };
+    let mut message = error.to_string();
+    append_source_exclusions(&mut message, issues.0.iter().map(|issue| issue.path.as_str()));
+    message.push_str("\nAlternatively, correct these link targets.");
+    anyhow::Error::msg(message)
 }
 
 impl GitRepository {
+    pub fn super_worktree_directory(&self) -> Result<PathBuf> {
+        let path = run_git(
+            &self.root,
+            ["rev-parse", "--path-format=absolute", "--git-path", "super/worktree"],
+        )?;
+        Ok(PathBuf::from(path.trim()))
+    }
+
     pub fn discover(path: &Path) -> Result<Self> {
         let root = run_git_at(path, ["rev-parse", "--show-toplevel"])?;
         let root = PathBuf::from(root.trim()).canonicalize()?;
@@ -150,7 +186,10 @@ impl GitRepository {
     pub fn prepare_fix(&self, base_tree_sha256: &str, diff: &str) -> Result<PreparedFix> {
         let before = self.worktree_snapshot()?;
         let source = self.source_snapshot(&before.tree, &HashMap::new())?;
-        let apply_error = self.check_fix_diff(diff).err().map(|error| format!("{error:#}"));
+        let apply_error = self
+            .check_fix_diff(&before.tree, diff)
+            .err()
+            .map(|error| format!("{error:#}"));
         Ok(PreparedFix {
             before,
             source_changed: source.manifest.tree_sha256 != base_tree_sha256,
@@ -158,7 +197,7 @@ impl GitRepository {
         })
     }
 
-    fn check_fix_diff(&self, diff: &str) -> Result<()> {
+    fn check_fix_diff(&self, tree: &str, diff: &str) -> Result<()> {
         if diff.is_empty() || diff.len() > 512 * 1024 || diff.contains('\0') {
             bail!("the proposed fix is empty or exceeds the 512 KiB patch limit")
         }
@@ -179,7 +218,30 @@ impl GitRepository {
             ],
             diff.as_bytes(),
         )
-        .context("the proposed fix does not apply cleanly to your working files")
+        .context("the proposed fix does not apply cleanly to your working files")?;
+        // Let Git apply the exact patch in an isolated index, then validate the resulting links
+        // before any working file changes. This also checks newly introduced directory links.
+        let temporary = TempDir::new().context("could not create an isolated Git index")?;
+        let index = temporary.path().join("index");
+        run_git_with_index(&self.root, &index, ["read-tree", tree])?;
+        command_with_stdin(
+            git_command(&self.root).env("GIT_INDEX_FILE", &index).args([
+                "apply",
+                "--cached",
+                "--recount",
+                "--whitespace=error",
+                "-",
+            ]),
+            diff.as_bytes(),
+        )?;
+        let patched_tree = run_git_with_index(&self.root, &index, ["write-tree"])?;
+        self.validate_tree_links(regular_tree_files(
+            self.tree_entries_at_commit(patched_tree.trim())?
+                .into_iter()
+                .filter(|entry| entry.mode == "120000"),
+        )?)?;
+        self.source_files_at_commit(patched_tree.trim())?;
+        Ok(())
     }
 
     pub fn ensure_fix_unchanged(&self, before: &WorktreeSnapshot) -> Result<()> {
@@ -199,7 +261,7 @@ impl GitRepository {
     /// three-way fallback, or whitespace/context relaxation may bypass the previewed patch.
     pub fn apply_fix_diff(&self, before: &WorktreeSnapshot, diff: &str) -> Result<()> {
         self.ensure_fix_unchanged(before)?;
-        self.check_fix_diff(diff)?;
+        self.check_fix_diff(&before.tree, diff)?;
         run_git_with_stdin(
             &self.root,
             [
@@ -346,6 +408,7 @@ impl GitRepository {
                 sha256,
                 bytes: file.bytes,
                 executable: file.executable,
+                symlink_target: file.symlink_target,
             });
         }
         files.sort_by(|left, right| left.path.cmp(&right.path));
@@ -363,20 +426,87 @@ impl GitRepository {
     }
 
     pub fn files_at_commit(&self, oid: &str) -> Result<Vec<String>> {
+        // Discover declarations once at their tracked regular-file paths. Symlink aliases are
+        // preserved in the source snapshot, without manufacturing duplicate declarations.
         Ok(self
             .source_files_at_commit(oid)?
             .into_iter()
+            .filter(|file| file.symlink_target.is_none())
             .map(|file| file.path)
             .collect())
     }
 
+    pub fn source_path_at_commit(&self, oid: &str, path: &str) -> Result<String> {
+        let files = self.source_files_at_commit(oid)?;
+        super_types::resolve_source_path(
+            files
+                .iter()
+                .map(|file| (file.path.as_str(), file.symlink_target.as_deref())),
+            path,
+        )
+        .map_err(anyhow::Error::msg)?
+        .with_context(|| format!("source selector `{path}` contains a symlink cycle"))
+    }
+
     fn source_files_at_commit(&self, oid: &str) -> Result<Vec<TreeFile>> {
         let ignores = self.superignore_at_commit(oid)?;
-        regular_tree_files(self.tree_entries_at_commit(oid)?.into_iter().filter(|entry| {
+        let files = regular_tree_files(self.tree_entries_at_commit(oid)?.into_iter().filter(|entry| {
             !ignores
                 .matched_path_or_any_parents(self.root.join(&entry.path), false)
                 .is_ignore()
-        }))
+        }))?;
+        self.validate_tree_links(files).map_err(source_link_exclusions)
+    }
+
+    fn validate_tree_links(&self, mut files: Vec<TreeFile>) -> Result<Vec<TreeFile>> {
+        let mut issues = Vec::new();
+        for file in &mut files {
+            if file.symlink_target.is_some() {
+                let invalid = if file.bytes > 4096 {
+                    Some((
+                        format!("<{} bytes; target not read>", file.bytes),
+                        "target exceeds 4096 bytes",
+                    ))
+                } else {
+                    match String::from_utf8(self.blob_bytes(&file.oid)?) {
+                        Ok(target) => {
+                            file.symlink_target = Some(target);
+                            None
+                        }
+                        Err(error) => Some((
+                            error
+                                .as_bytes()
+                                .iter()
+                                .flat_map(|byte| std::ascii::escape_default(*byte))
+                                .map(char::from)
+                                .collect(),
+                            "target is not UTF-8",
+                        )),
+                    }
+                };
+                if let Some((target, reason)) = invalid {
+                    issues.push(super_types::SourceLinkIssue {
+                        path: file.path.clone(),
+                        target,
+                        reason,
+                    });
+                    file.symlink_target = None;
+                }
+            }
+        }
+        issues.extend(
+            super_types::source_link_issues(
+                files
+                    .iter()
+                    .map(|file| (file.path.as_str(), file.symlink_target.as_deref())),
+            )
+            .map_err(anyhow::Error::msg)?,
+        );
+        if !issues.is_empty() {
+            issues.sort_by(|left, right| left.path.cmp(&right.path));
+            return Err(InvalidSourceLinks(issues).into());
+        }
+        Ok(files)
     }
 
     fn tree_entries_at_commit(&self, oid: &str) -> Result<Vec<TreeEntry>> {
@@ -407,7 +537,12 @@ impl GitRepository {
         let output = run_git_bytes(&self.root, ["ls-files", "--others", "--exclude-standard", "-z"])?;
         let mut builder = GitignoreBuilder::new(&self.root);
         let superignore = self.root.join(".superignore");
-        if superignore.exists() {
+        // Like Git's ignore files, ignore rules must be regular files, never link referents.
+        // Check the index too: core.symlinks=false presents tracked links as regular text files.
+        let staged = run_git(&self.root, ["ls-files", "--stage", "--", ".superignore"])?;
+        if std::fs::symlink_metadata(&superignore).is_ok_and(|metadata| metadata.is_file())
+            && !staged.starts_with("120000 ")
+        {
             builder.add(&superignore);
         }
         let ignores = builder
@@ -430,7 +565,10 @@ impl GitRepository {
 
     fn superignore_at_commit(&self, oid: &str) -> Result<ignore::gitignore::Gitignore> {
         let mut builder = GitignoreBuilder::new(&self.root);
-        if let Ok(source) = self.file_at_commit(oid, ".superignore") {
+        let entry = run_git(&self.root, ["ls-tree", oid, "--", ".superignore"])?;
+        if (entry.starts_with("100644 ") || entry.starts_with("100755 "))
+            && let Ok(source) = self.file_at_commit(oid, ".superignore")
+        {
             for line in source.lines() {
                 builder.add_line(Some(PathBuf::from(".superignore")), line)?;
             }
@@ -632,8 +770,8 @@ fn parse_tree_entry(entry: &[u8]) -> Result<TreeEntry> {
 }
 
 fn regular_tree_files(entries: impl Iterator<Item = TreeEntry>) -> Result<Vec<TreeFile>> {
-    let (regular, mut unsupported): (Vec<_>, Vec<_>) =
-        entries.partition(|entry| entry.kind == "blob" && matches!(entry.mode.as_str(), "100644" | "100755"));
+    let (regular, mut unsupported): (Vec<_>, Vec<_>) = entries
+        .partition(|entry| entry.kind == "blob" && matches!(entry.mode.as_str(), "100644" | "100755" | "120000"));
     if !unsupported.is_empty() {
         unsupported.sort_by(|left, right| left.path.cmp(&right.path));
         let paths = unsupported
@@ -648,23 +786,12 @@ fn regular_tree_files(entries: impl Iterator<Item = TreeEntry>) -> Result<Vec<Tr
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let suggestions = unsupported
-            .iter()
-            .filter_map(|entry| literal_ignore_pattern(&entry.path))
-            .collect::<Vec<_>>();
         let noun = if unsupported.len() == 1 { "entry" } else { "entries" };
         let mut message = format!(
             "super cannot sync {} unsupported Git {noun}:\n{paths}",
             unsupported.len()
         );
-        if !suggestions.is_empty() {
-            message.push_str("\n\nTo exclude these entries, append these lines to .superignore.\n");
-            message.push_str(&suggestions.join("\n"));
-            message.push_str("\n\nCommit .superignore before linking, or include it with --dirty when checking.");
-        }
-        if suggestions.len() != unsupported.len() {
-            message.push_str("\n\nPaths containing control characters have no suggested ignore line. Rename or replace them, or exclude a containing directory.");
-        }
+        append_source_exclusions(&mut message, unsupported.iter().map(|entry| entry.path.as_str()));
         message.push_str("\nAlternatively, replace unsupported entries with regular files needed for checking.");
         bail!(message)
     }
@@ -676,9 +803,26 @@ fn regular_tree_files(entries: impl Iterator<Item = TreeEntry>) -> Result<Vec<Tr
                 oid: entry.oid,
                 bytes: entry.bytes.context("Git omitted the size of a regular source blob")?,
                 executable: entry.mode == "100755",
+                symlink_target: (entry.mode == "120000").then(String::new),
             })
         })
         .collect()
+}
+
+fn append_source_exclusions<'a>(message: &mut String, paths: impl Iterator<Item = &'a str>) {
+    let mut count = 0;
+    let suggestions = paths
+        .inspect(|_| count += 1)
+        .filter_map(literal_ignore_pattern)
+        .collect::<Vec<_>>();
+    if !suggestions.is_empty() {
+        message.push_str("\n\nTo exclude these entries, append these lines to .superignore.\n");
+        message.push_str(&suggestions.join("\n"));
+        message.push_str("\n\nCommit .superignore before linking, or include it with --dirty when checking.");
+    }
+    if suggestions.len() != count {
+        message.push_str("\n\nPaths containing control characters have no suggested ignore line. Rename or replace them, or exclude a containing directory.");
+    }
 }
 
 fn literal_ignore_pattern(path: &str) -> Option<String> {
@@ -1071,6 +1215,208 @@ mod tests {
         assert_eq!(cached.source_hashes, snapshot.source_hashes);
     }
 
+    // Use Git's portable core.symlinks=false representation, so these tests exercise Windows
+    // checkouts as well as Unix without requiring symlink creation privileges.
+    fn index_symlink(repository: &GitRepository, path: &str, target: &str) {
+        let root = &repository.root;
+        run_git(root, ["config", "core.symlinks", "false"]).unwrap();
+        let destination = root.join(path);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(&destination, target).unwrap();
+        let oid = run_git(root, ["hash-object", "-w", "--", path]).unwrap();
+        run_git(
+            root,
+            [
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("120000,{},{}", oid.trim(), path),
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn git_symlinks_preserve_targets_and_do_not_upload_or_discover_referents_twice() {
+        let (_directory, repository) = fix_repository();
+        std::fs::write(repository.root.join(".superignore"), "excluded.txt\n").unwrap();
+        std::fs::write(repository.root.join("excluded.txt"), "excluded content").unwrap();
+        run_git(&repository.root, ["add", ".superignore", "excluded.txt"]).unwrap();
+        for (path, target) in [
+            ("alias.txt", "value.txt"),
+            ("nested/link", "../value.txt"),
+            ("missing", "generated/output"),
+            ("excluded", "excluded.txt"),
+            ("cycle-a", "cycle-b"),
+            ("cycle-b", "cycle-a"),
+        ] {
+            index_symlink(&repository, path, target);
+        }
+        run_git(&repository.root, ["commit", "-m", "Portable links"]).unwrap();
+        let head = repository.head().unwrap();
+        let snapshot = repository.source_snapshot(&head.oid, &HashMap::new()).unwrap();
+        assert_eq!(
+            snapshot
+                .manifest
+                .files
+                .iter()
+                .filter(|file| file.symlink_target.is_some())
+                .count(),
+            6
+        );
+        assert!(!snapshot.manifest.files.iter().any(|file| file.path == "excluded.txt"));
+        assert!(
+            !repository
+                .files_at_commit(&head.oid)
+                .unwrap()
+                .contains(&"alias.txt".to_owned())
+        );
+        assert_eq!(
+            repository.source_path_at_commit(&head.oid, "nested/link").unwrap(),
+            "value.txt"
+        );
+        assert!(repository.source_path_at_commit(&head.oid, "cycle-a").is_err());
+        let dirty = repository.temporary_commit(&HashMap::new()).unwrap();
+        assert_eq!(
+            repository
+                .source_snapshot(&dirty.commit.oid, &HashMap::new())
+                .unwrap()
+                .manifest,
+            snapshot.manifest
+        );
+    }
+
+    #[test]
+    fn source_rejects_direct_and_indirect_escapes_from_git_objects() {
+        for target in ["../outside", "/outside", "C:/outside", "nested/up/../outside"] {
+            let (_directory, repository) = fix_repository();
+            index_symlink(&repository, "nested/up", "..");
+            index_symlink(&repository, "escape", target);
+            let tree = run_git(&repository.root, ["write-tree"]).unwrap();
+            assert!(
+                repository.source_snapshot(tree.trim(), &HashMap::new()).is_err(),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_reports_all_invalid_targets_and_suggests_only_cause_exclusions() {
+        let (_directory, repository) = fix_repository();
+        for (path, target) in [
+            ("alias", "escape"),
+            ("absolute", "/outside"),
+            ("deep/up", ".."),
+            ("escape", "../outside"),
+            ("indirect", "deep/up/../outside"),
+            ("metadata", ".git/config"),
+            ("odd[link]", "../outside"),
+            ("tab\tlink", "../outside"),
+            ("oversized", &"x".repeat(4097)),
+        ] {
+            index_symlink(&repository, path, target);
+        }
+        run_git(&repository.root, ["commit", "-m", "Invalid source links"]).unwrap();
+        let head = repository.head().unwrap();
+        let error = repository
+            .source_snapshot(&head.oid, &HashMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("source contains 7 invalid symlinks:"), "{error}");
+        assert!(error.contains("\"escape\" -> \"../outside\""), "{error}");
+        assert!(!error.contains("related link:"), "{error}");
+        assert!(!error.contains("\"alias\""), "{error}");
+        assert!(error.contains("<4097 bytes; target not read>"), "{error}");
+        assert!(error.contains("Paths containing control characters have no suggested ignore line."));
+        let suggestions = error
+            .split_once("To exclude these entries, append these lines to .superignore.\n")
+            .unwrap()
+            .1
+            .split("\n\n")
+            .next()
+            .unwrap();
+        assert_eq!(
+            suggestions,
+            "/absolute\n/escape\n/indirect\n/metadata\n/odd\\[link\\]\n/oversized"
+        );
+        // The control-character path must be renamed or explicitly excluded by the user.
+        run_git(&repository.root, ["rm", "--", "tab\tlink"]).unwrap();
+        std::fs::write(repository.root.join(".superignore"), format!("{suggestions}\n")).unwrap();
+        run_git(&repository.root, ["add", ".superignore"]).unwrap();
+        run_git(&repository.root, ["commit", "-m", "Exclude invalid links"]).unwrap();
+        let snapshot = repository
+            .source_snapshot(&repository.head().unwrap().oid, &HashMap::new())
+            .unwrap();
+        assert!(
+            snapshot
+                .manifest
+                .files
+                .iter()
+                .any(|file| file.path == "alias" && file.symlink_target.as_deref() == Some("escape"))
+        );
+        assert!(snapshot.manifest.files.iter().any(|file| file.path == "deep/up"));
+        assert!(!snapshot.manifest.files.iter().any(|file| file.path == "escape"));
+    }
+
+    #[test]
+    fn fixes_cannot_introduce_links_outside_the_repository() {
+        let (_directory, repository) = fix_repository();
+        std::fs::write(repository.root.join(".superignore"), "/link\n").unwrap();
+        let diff = "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+../outside\n\\ No newline at end of file\n";
+        let prepared = repository.prepare_fix(&"0".repeat(64), diff).unwrap();
+        let error = prepared.apply_error.unwrap();
+        assert!(error.contains("\"link\" -> \"../outside\""), "{error}");
+        assert!(!error.contains("To exclude"), "{error}");
+        assert!(repository.root.join("link").symlink_metadata().is_err());
+    }
+
+    #[test]
+    fn symlinked_ignore_files_are_preserved_without_reading_their_targets_as_rules() {
+        let (_directory, repository) = fix_repository();
+        index_symlink(&repository, ".superignore", "value.txt");
+        run_git(&repository.root, ["commit", "-m", "Linked ignore file"]).unwrap();
+        let snapshot = repository
+            .source_snapshot(&repository.head().unwrap().oid, &HashMap::new())
+            .unwrap();
+        assert!(snapshot.manifest.files.iter().any(|file| file.path == "value.txt"));
+        std::fs::remove_file(repository.root.join("value.txt")).unwrap();
+        run_git(&repository.root, ["add", "-u"]).unwrap();
+        run_git(&repository.root, ["commit", "-m", "Remove target"]).unwrap();
+        std::fs::write(repository.root.join("value.txt"), "new file").unwrap();
+        let dirty = repository.temporary_commit(&HashMap::new()).unwrap();
+        assert!(
+            repository
+                .files_at_commit(&dirty.commit.oid)
+                .unwrap()
+                .contains(&"value.txt".to_owned())
+        );
+    }
+
+    #[test]
+    fn discovery_resolves_file_and_directory_aliases_from_the_selected_git_tree() {
+        let (_directory, repository) = fix_repository();
+        std::fs::create_dir(repository.root.join("tests")).unwrap();
+        std::fs::write(repository.root.join("tests/law.rs"), "#[supertest]\nfn law() {}\n").unwrap();
+        run_git(&repository.root, ["add", "tests/law.rs"]).unwrap();
+        index_symlink(&repository, "alias.rs", "tests/law.rs");
+        index_symlink(&repository, "suite", "tests");
+        run_git(&repository.root, ["commit", "-m", "Discovery links"]).unwrap();
+        let head = repository.head().unwrap();
+        // A checkout's current target must not change selection at a historical revision.
+        std::fs::write(repository.root.join("alias.rs"), "missing.rs").unwrap();
+        for selector in [".", "alias.rs", "suite", "suite/law.rs::law"] {
+            let discovered =
+                crate::discovery::discover(&repository, &head.oid, &repository.root, selector, true).unwrap();
+            assert_eq!(discovered.supertests.len(), 1, "{selector}");
+            assert_eq!(discovered.supertests[0].path, "tests/law.rs");
+        }
+        assert_eq!(
+            crate::discovery::canonicalize_source_selector(&repository, &head.oid, &repository.root, "alias.rs::law")
+                .unwrap(),
+            "tests/law.rs::law"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn unsupported_git_entries_are_reported_together_and_can_be_ignored() {
@@ -1110,20 +1456,18 @@ mod tests {
             .source_snapshot(&head.oid, &HashMap::new())
             .unwrap_err()
             .to_string();
-        assert!(error.contains("alias.rs"), "{error}");
-        assert!(error.contains("nested/alias.rs"), "{error}");
+        assert!(!error.contains("alias.rs"), "{error}");
         assert!(error.contains("vendor/module"), "{error}");
         assert!(
-            error.starts_with("super cannot sync 3 unsupported Git entries:"),
+            error.starts_with("super cannot sync 1 unsupported Git entry:"),
             "{error}"
         );
-        assert!(error.contains("\"alias.rs\" (symlink)"), "{error}");
         assert!(error.contains("\"vendor/module\" (submodule)"), "{error}");
         assert!(!error.contains("ignored/alias.rs"), "{error}");
         assert_eq!(repository.files_at_commit(&head.oid).unwrap_err().to_string(), error);
 
         let suggestions = suggested_ignore_lines(&error);
-        assert_eq!(suggestions, "/alias.rs\n/nested/alias.rs\n/vendor/module");
+        assert_eq!(suggestions, "/vendor/module");
         std::fs::write(
             directory.path().join(".superignore"),
             format!("/ignored/\n{suggestions}\n"),
@@ -1140,6 +1484,7 @@ mod tests {
                 .manifest
                 .files
                 .iter()
+                .filter(|file| file.symlink_target.is_none())
                 .map(|file| &file.path)
                 .collect::<Vec<_>>(),
             paths.iter().collect::<Vec<_>>()
@@ -1176,6 +1521,17 @@ mod tests {
         symlink("value.txt", root.join("line\nbreak")).unwrap();
         symlink("value.txt", root.join("normal-link")).unwrap();
         run_git(root, ["add", "."]).unwrap();
+        for path in ["line\nbreak", "normal-link"] {
+            run_git(
+                root,
+                [
+                    "update-index",
+                    "--cacheinfo",
+                    &format!("160000,{},{}", repository.head().unwrap().oid, path),
+                ],
+            )
+            .unwrap();
+        }
         run_git(root, ["commit", "-m", "Unusual symlink name"]).unwrap();
         let error = repository
             .source_snapshot(&repository.head().unwrap().oid, &HashMap::new())
@@ -1224,6 +1580,17 @@ mod tests {
             std::fs::write(root.join(path), "keep me\n").unwrap();
         }
         run_git(root, ["add", "."]).unwrap();
+        for path in links {
+            run_git(
+                root,
+                [
+                    "update-index",
+                    "--cacheinfo",
+                    &format!("160000,{},{}", repository.head().unwrap().oid, path),
+                ],
+            )
+            .unwrap();
+        }
         run_git(root, ["commit", "-m", "Literal symlink paths"]).unwrap();
         let error = repository
             .source_snapshot(&repository.head().unwrap().oid, &HashMap::new())

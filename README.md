@@ -9,6 +9,14 @@ JavaScript and VHDL support is currently being rolled out. See
 
 [Read the Super documentation](https://docs.schematic.tech/super/).
 
+Repository links live in each worktree's Git metadata, with source history shared
+across the clone's worktrees. Moving a checkout preserves its link; a separate clone
+still needs `super link`. Credentials remain in your user configuration.
+
+CLI 0.11.0 requires the updated Super service. Update the service before distributing
+this client; older clients remain supported. Existing local links migrate on the
+next modifying command.
+
 ## Install
 
 ```sh

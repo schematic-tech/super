@@ -3,7 +3,12 @@
 pub mod credential;
 pub mod login;
 pub mod presentation;
+mod symlinks;
 pub mod usage;
+
+pub use symlinks::{
+    SourceLinkIssue, resolve_source_path, source_link_issues, source_link_warnings, validate_source_links,
+};
 
 use std::collections::BTreeSet;
 
@@ -145,6 +150,8 @@ pub struct RevisionFile {
     pub bytes: u64,
     #[serde(default)]
     pub executable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,8 +159,6 @@ pub struct RevisionFile {
 pub struct CreateWorkspaceRevision {
     #[serde(default)]
     pub parent_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reported_git_commit: Option<String>,
     pub tree_sha256: String,
     #[serde(default)]
     pub files: Vec<RevisionFile>,
@@ -173,8 +178,6 @@ pub struct WorkspaceRevision {
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub parent_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reported_git_commit: Option<String>,
     pub tree_sha256: String,
     pub files: Vec<RevisionFile>,
     pub state: WorkspaceRevisionState,
@@ -287,7 +290,19 @@ impl SourceManifest {
                     file.path, MAX_SOURCE_FILE_BYTES
                 ));
             }
+            if let Some(target) = &file.symlink_target
+                && (file.executable
+                    || file.bytes != target.len() as u64
+                    || file.sha256 != source_sha256(target.as_bytes()))
+            {
+                return Err(format!("symlink `{}` does not match its target identity", file.path));
+            }
         }
+        validate_source_links(
+            self.files
+                .iter()
+                .map(|file| (file.path.as_str(), file.symlink_target.as_deref())),
+        )?;
         if self.tree_sha256 != source_tree_sha256(&self.files)? {
             return Err("source tree SHA-256 does not match its complete file manifest".to_owned());
         }
@@ -302,6 +317,8 @@ pub struct SourceFile {
     pub sha256: String,
     pub bytes: u64,
     pub executable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symlink_target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -577,6 +594,8 @@ pub struct CheckEvent {
 #[serde(deny_unknown_fields)]
 pub struct CreateChecksRequest {
     pub revision_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_git_commit: Option<String>,
     pub selector: String,
     #[serde(default)]
     pub certify: bool,
@@ -635,7 +654,11 @@ pub fn source_tree_sha256(files: &[SourceFile]) -> Result<String, String> {
         digest.update(path);
         digest.update(content_digest);
         digest.update(file.bytes.to_be_bytes());
-        digest.update([u8::from(file.executable)]);
+        digest.update([if file.symlink_target.is_some() {
+            2
+        } else {
+            u8::from(file.executable)
+        }]);
     }
     Ok(hex::encode(digest.finalize()))
 }
@@ -734,31 +757,32 @@ mod tests {
     fn public_check_admission_exposes_intent_but_no_internal_profile() {
         let request = CreateChecksRequest {
             revision_id: Uuid::nil(),
+            reported_git_commit: Some("a".repeat(40)),
             selector: "tests/example.c::identity_holds".to_owned(),
             certify: false,
             supertests: Vec::new(),
         };
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["certify"], false);
+        assert_eq!(value["reported_git_commit"], "a".repeat(40));
         assert!(value.get("profile").is_none());
         assert!(value.get("assurance").is_none());
     }
 
     #[test]
-    fn workspace_revision_uses_optional_reported_git_provenance() {
+    fn source_registration_rejects_git_commit_attribution() {
         let request = CreateWorkspaceRevision {
             parent_id: None,
-            reported_git_commit: Some("a".repeat(40)),
             tree_sha256: "b".repeat(64),
             files: Vec::new(),
         };
         let value = serde_json::to_value(request).unwrap();
-        assert_eq!(value["reported_git_commit"], "a".repeat(40));
+        assert!(value.get("reported_git_commit").is_none());
         assert!(value.get("git_commit").is_none());
 
         assert!(
             serde_json::from_value::<CreateWorkspaceRevision>(serde_json::json!({
-                "git_commit": "a".repeat(40),
+                "reported_git_commit": "a".repeat(40),
                 "tree_sha256": "b".repeat(64),
                 "files": []
             }))
@@ -795,18 +819,41 @@ mod tests {
                 sha256: "22".repeat(32),
                 bytes: 2,
                 executable: true,
+                symlink_target: None,
             },
             SourceFile {
                 path: "a-b".into(),
                 sha256: "11".repeat(32),
                 bytes: 1,
                 executable: false,
+                symlink_target: None,
             },
         ];
         assert_eq!(
             source_tree_sha256(&files).expect("bytewise UTF-8 order"),
             "1164facf7b1210ed7a8749455048ef9a0d0e39179fa0c85c57720c6395a5c83e"
         );
+    }
+
+    #[test]
+    fn link_identity_covers_kind_and_exact_target_bytes() {
+        let mut file = SourceFile {
+            path: "alias".to_owned(),
+            sha256: source_sha256(b"target"),
+            bytes: 6,
+            executable: false,
+            symlink_target: None,
+        };
+        let regular = source_tree_sha256(&[file.clone()]).unwrap();
+        file.symlink_target = Some("target".to_owned());
+        let mut manifest = SourceManifest {
+            tree_sha256: source_tree_sha256(&[file.clone()]).unwrap(),
+            files: vec![file],
+        };
+        assert_ne!(regular, manifest.tree_sha256);
+        manifest.validate().unwrap();
+        manifest.files[0].symlink_target = Some("changed".to_owned());
+        assert!(manifest.validate().is_err());
     }
 
     #[test]

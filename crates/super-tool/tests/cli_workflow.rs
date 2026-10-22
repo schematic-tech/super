@@ -16,6 +16,9 @@ use std::{
 use super_types::{SourceFile, source_sha256, source_tree_sha256};
 use tempfile::TempDir;
 
+#[path = "support/state.rs"]
+mod local_state;
+
 const WORKSPACE: &str = "00000000-0000-0000-0000-000000000001";
 const CHECK: &str = "42";
 const RUN: &str = "00000000-0000-0000-0000-000000000017";
@@ -98,6 +101,28 @@ fn language_examples_support_discovery_submission_results_and_rechecking() {
         let submissions = fixture.service.submissions.lock().unwrap();
         assert_eq!(submissions.last().unwrap()["supertests"], json!([declaration]));
     }
+}
+
+#[test]
+fn csharp_empty_interpolation_does_not_block_repository_checks() {
+    let source = r#"class Ordinary {
+    void Log() {
+        output.WriteLine($"");
+        output.WriteLine($"");
+    }
+}
+"#;
+    let fixture = Fixture::with_files(false, false, &[("test.py", SOURCE), ("ordinary.cs", source)], |_| {});
+    let output = fixture.run(&["check", ".", "--detach", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        fixture.service.submissions.lock().unwrap()[0]["supertests"],
+        json!([{"path": "test.py", "name": "law", "language": "python", "line": 3}])
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.directory.path().join("repo/ordinary.cs")).unwrap(),
+        source
+    );
 }
 
 #[test]
@@ -419,6 +444,7 @@ fn prepare_repository(directory: &Path, files: &[(&str, &str)]) -> (std::path::P
             sha256: source_sha256(source.as_bytes()),
             bytes: source.len() as u64,
             executable: false,
+            symlink_target: None,
         });
     }
     git(&root, &["add", "."]);
@@ -523,7 +549,7 @@ impl Fixture {
             (
                 format!("GET /v1/super/workspace-revisions/{REVISION}"),
                 json!({
-                    "id": REVISION, "workspace_id": WORKSPACE, "parent_id": null, "reported_git_commit": head,
+                    "id": REVISION, "workspace_id": WORKSPACE, "parent_id": null,
                     "tree_sha256": tree, "files": [], "state": "complete",
                     "created_at": "2026-01-01T00:00:00Z", "completed_at": "2026-01-01T00:00:00Z"
                 }),
@@ -1998,7 +2024,7 @@ mod terminal {
                 // advance to syncing, and even a retry after that failure must ask again.
                 read_until(&mut master, &mut text, "fixture not found");
                 assert_eq!(process.0.wait().unwrap().code(), Some(2));
-                let state: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+                let state = crate::local_state::read(&fixture.directory.path().join("config"));
                 assert!(state["repositories"][0].get("dirty_preference").is_none());
                 let current = &state["repositories"][0]["temporary_commits"];
                 assert_eq!(current.as_object().unwrap().len(), 1);
@@ -2303,6 +2329,7 @@ fn fix_uses_dirty_checked_contents_without_warning_or_changing_staging() {
         sha256: source_sha256(checked.as_bytes()),
         bytes: checked.len() as u64,
         executable: false,
+        symlink_target: None,
     }])
     .unwrap();
     let fixture = Fixture::configured(false, false, |routes| {

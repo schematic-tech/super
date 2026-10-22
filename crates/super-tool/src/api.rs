@@ -263,7 +263,11 @@ impl SuperClient {
     }
 
     pub async fn workspace_revision(&self, id: Uuid) -> Result<WorkspaceRevision> {
-        self.get(&api::workspace_revision(id)).await
+        let revision: WorkspaceRevision = self.get(&api::workspace_revision(id)).await?;
+        if revision.id != id {
+            bail!("the Super API returned a different source revision than requested");
+        }
+        Ok(revision)
     }
 
     async fn workspace(&self, id: Uuid) -> Result<Workspace> {
@@ -337,7 +341,6 @@ impl SuperClient {
                 &api::workspace_revisions(workspace_id),
                 &CreateWorkspaceRevision {
                     parent_id,
-                    reported_git_commit: Some(commit.oid.clone()),
                     tree_sha256: snapshot.manifest.tree_sha256.clone(),
                     files: snapshot
                         .manifest
@@ -348,17 +351,13 @@ impl SuperClient {
                             sha256: file.sha256.clone(),
                             bytes: file.bytes,
                             executable: file.executable,
+                            symlink_target: file.symlink_target.clone(),
                         })
                         .collect(),
                 },
             )
             .await?;
-        validate_revision_identity(
-            &admission.revision,
-            workspace_id,
-            &snapshot.manifest.tree_sha256,
-            commit,
-        )?;
+        validate_revision_identity(&admission.revision, workspace_id, &snapshot.manifest.tree_sha256)?;
 
         let uploads = admission
             .missing_content
@@ -403,7 +402,10 @@ impl SuperClient {
         let revision: WorkspaceRevision = self
             .post_without_body(&api::finalize_revision(admission.revision.id))
             .await?;
-        validate_revision_identity(&revision, workspace_id, &snapshot.manifest.tree_sha256, commit)?;
+        validate_revision_identity(&revision, workspace_id, &snapshot.manifest.tree_sha256)?;
+        if revision.id != admission.revision.id || revision.state != WorkspaceRevisionState::Complete {
+            bail!("the Super API did not finalize the admitted source revision");
+        }
         Ok((revision, snapshot))
     }
 
@@ -544,6 +546,13 @@ impl SuperClient {
         .await
         .context("waiting for check acceptance timed out; run super check again to recover the same submission")??;
         validate_submission(&response, workspace_id)?;
+        if response
+            .checks
+            .iter()
+            .any(|check| check.revision.reported_git_commit != request.reported_git_commit)
+        {
+            bail!("the Super API returned checks for a different Git commit");
+        }
         for check in &mut response.checks {
             check.normalize_presentation();
         }
@@ -822,17 +831,9 @@ impl SuperClient {
     }
 }
 
-fn validate_revision_identity(
-    revision: &WorkspaceRevision,
-    workspace_id: Uuid,
-    tree_sha256: &str,
-    commit: &CommitRef,
-) -> Result<()> {
+fn validate_revision_identity(revision: &WorkspaceRevision, workspace_id: Uuid, tree_sha256: &str) -> Result<()> {
     if revision.workspace_id != workspace_id || revision.tree_sha256 != tree_sha256 {
         bail!("the Super API returned a revision for a different workspace source tree")
-    }
-    if revision.reported_git_commit.as_deref() != Some(commit.oid.as_str()) {
-        bail!("the Super API changed the reported Git provenance for the admitted source tree")
     }
     Ok(())
 }

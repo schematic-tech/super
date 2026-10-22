@@ -1,13 +1,53 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use tree_sitter::Node;
 
-use super::{named_children, parse_tree, row_to_line};
+use super::{named_children, row_to_line};
 
 pub(super) fn declarations(source: &str) -> Result<Vec<(String, u32)>> {
-    let tree = parse_tree(&tree_sitter_c_sharp::LANGUAGE.into(), source)?;
+    let tree = declaration_tree(source)?;
     let mut declarations = Vec::new();
     visit(tree.root_node(), source, &[], &mut declarations)?;
     Ok(declarations)
+}
+
+fn declaration_tree(source: &str) -> Result<tree_sitter::Tree> {
+    let language = tree_sitter_c_sharp::LANGUAGE.into();
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&language)
+        .context("could not load the source-language grammar")?;
+    let mut tree = parser
+        .parse(source, None)
+        .context("the source parser stopped before producing a syntax tree")?;
+    // tree-sitter-c-sharp 0.23.5 loses scanner state for $"". Replace only the
+    // recognized interpolation prefix with a space, then require a valid reparse.
+    // Byte offsets and the original source used for declarations/uploads stay intact.
+    let mut recovered_source: Option<Vec<u8>> = None;
+    while tree.root_node().has_error() {
+        let mut changed = false;
+        let mut pending = vec![tree.root_node()];
+        while let Some(node) = pending.pop() {
+            if node.kind() == "interpolation_start"
+                && &source[node.byte_range()] == "$"
+                && let Some(tail) = source[node.end_byte()..].strip_prefix("\"\"")
+                && !tail.starts_with('"')
+                && !tail.starts_with("u8")
+            {
+                let bytes = recovered_source.get_or_insert_with(|| source.as_bytes().to_vec());
+                changed |= bytes[node.start_byte()] == b'$';
+                bytes[node.start_byte()] = b' ';
+            }
+            pending.extend(named_children(node));
+        }
+        if !changed {
+            bail!("the selected source contains syntax errors");
+        }
+        // A reparse can expose another empty string obscured by the first error.
+        tree = parser
+            .parse(recovered_source.as_ref().expect("a changed source exists"), None)
+            .context("the source parser stopped before producing a syntax tree")?;
+    }
+    Ok(tree)
 }
 
 fn visit(node: Node<'_>, source: &str, inherited: &[String], declarations: &mut Vec<(String, u32)>) -> Result<()> {
@@ -75,6 +115,69 @@ fn visit(node: Node<'_>, source: &str, inherited: &[String], declarations: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_interpolated_strings_do_not_block_discovery() {
+        let source = r#"using Schematic;
+public static class Checks {
+    [Supertest]
+    public static void EmptyInterpolatedString() {
+        var value = $"";
+        System.Diagnostics.Debug.Assert(value == "");
+    }
+}
+"#;
+        assert_eq!(declarations(source).unwrap(), [("EmptyInterpolatedString".into(), 3)]);
+        assert!(
+            declarations(r#"class Ordinary { void Log() { output.WriteLine($""); } }"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn empty_interpolation_recovery_preserves_declaration_names_and_lines() {
+        let source = r#"using Schematic;
+class Claims {
+    // Empty strings: $"". Unicode before the marker: café.
+    string ordinary = "$\"\"";
+    string verbatim = @"$""""";
+    string raw = """text $"" text""";
+    [Supertest]
+    void @first() { var values = new[] { $"", $"", $@"", @$"" }; }
+
+    [Supertest]
+    void café() { var nested = $"prefix {($"")} suffix"; }
+}
+"#;
+        assert_eq!(
+            declarations(source).unwrap(),
+            [("first".into(), 7), ("café".into(), 10)]
+        );
+    }
+
+    #[test]
+    fn empty_interpolation_recovery_does_not_hide_invalid_syntax() {
+        for expression in [
+            r#"$$"""#,
+            r#"$ """#,
+            r#"$/* gap */"""#,
+            r#"$""u8"#,
+            r#"$""""#,
+            r#"$"" +"#,
+            r#"$"{""#,
+        ] {
+            let source = format!(
+                "class C {{ [Schematic.Supertest] void law() {{ var valid = $\"\"; var invalid = {expression}; }} }}"
+            );
+            assert!(declarations(&source).is_err(), "{expression}");
+        }
+        assert!(declarations(r#"class C { [Schematic.Supertest] void law() { var s = $""; }"#).is_err());
+        assert!(
+            declarations(r#"class C { [Schematic.Supertest, Schematic.Supertest] void law() { var s = $""; } }"#)
+                .is_err()
+        );
+    }
 
     #[test]
     fn finds_imported_qualified_and_aliased_methods_in_types_and_namespaces() {

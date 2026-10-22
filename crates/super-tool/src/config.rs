@@ -3,6 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context, Result};
@@ -12,8 +13,12 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod metadata;
+
 const LOCAL_STATE_SCHEMA_VERSION: u32 = 1;
 
+/// Command-facing view, also used to read the legacy profile format. Current persistence
+/// separates profile settings, worktree links, and clone history in `metadata`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LocalState {
@@ -125,14 +130,14 @@ pub struct LocalRepository {
     pub pending_submissions: Vec<PendingSubmission>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LocalRevision {
     pub id: Uuid,
     pub tree_sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PendingSubmission {
     pub request_sha256: String,
@@ -143,6 +148,7 @@ pub struct PendingSubmission {
 #[derive(Debug, Clone)]
 pub struct StateStore {
     directory: PathBuf,
+    discovered_roots: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl StateStore {
@@ -155,36 +161,50 @@ impl StateStore {
                 .config_dir()
                 .to_owned()
         };
-        Ok(Self { directory })
+        Ok(Self {
+            directory,
+            discovered_roots: Arc::default(),
+        })
     }
 
     pub fn load(&self) -> Result<LocalState> {
-        let path = self.state_path();
-        match fs::read(&path) {
-            Ok(bytes) => {
-                let value: serde_json::Value =
-                    serde_json::from_slice(&bytes).with_context(|| format!("could not read {}", path.display()))?;
-                let version = value.get("schema_version").and_then(serde_json::Value::as_u64);
-                if version != Some(u64::from(LOCAL_STATE_SCHEMA_VERSION)) {
-                    anyhow::bail!(
-                        "{} uses an incompatible super state schema; expected version {LOCAL_STATE_SCHEMA_VERSION}",
-                        path.display()
-                    )
-                }
-                serde_json::from_value(value).with_context(|| format!("could not read {}", path.display()))
+        // Existing readers participate in the writer lock without creating files on a
+        // read-only command. Atomic files also allow a first reader during initialization.
+        let lock = match File::open(self.lock_path()) {
+            Ok(lock) => {
+                FileExt::lock_shared(&lock).context("could not lock super state")?;
+                Some(lock)
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LocalState::default()),
-            Err(error) => Err(error).with_context(|| format!("could not read {}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("could not open super state lock"),
+        };
+        let result = metadata::load(self).map(|(_, state)| state);
+        drop(lock);
+        result
+    }
+
+    /// Discover links from Git itself, including after a checkout has moved. The profile's
+    /// directory list is only a hint for the observer; reading a link does not rewrite state.
+    pub fn load_for(&self, git: &crate::git::GitRepository) -> Result<LocalState> {
+        let mut roots = self
+            .discovered_roots
+            .lock()
+            .expect("repository discovery lock poisoned");
+        if !roots.contains(&git.root) {
+            roots.push(git.root.clone());
         }
+        drop(roots);
+        self.load()
     }
 
     pub fn update<T>(&self, change: impl FnOnce(&mut LocalState) -> Result<T>) -> Result<T> {
         self.ensure_directory()?;
         let lock = self.open_lock()?;
         lock.lock_exclusive().context("could not lock super state")?;
-        let mut state = self.load()?;
+        let (profile, mut state) = metadata::load(self)?;
+        let before = state.clone();
         let result = change(&mut state)?;
-        self.save_unlocked(&state)?;
+        metadata::save(self, profile, &before, &state)?;
         FileExt::unlock(&lock).context("could not unlock super state")?;
         Ok(result)
     }
@@ -316,23 +336,6 @@ impl StateStore {
     fn open_lock(&self) -> Result<File> {
         open_private(&self.lock_path())
     }
-
-    fn save_unlocked(&self, state: &LocalState) -> Result<()> {
-        let path = self.state_path();
-        let temporary = self.directory.join("state.json.tmp");
-        let bytes = serde_json::to_vec_pretty(state)?;
-        let mut file = open_private(&temporary)?;
-        file.set_len(0)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, &path).with_context(|| format!("could not replace {}", path.display()))?;
-        #[cfg(unix)]
-        File::open(&self.directory)
-            .context("could not open the super configuration directory for synchronization")?
-            .sync_all()
-            .context("could not synchronize the super configuration directory")?;
-        Ok(())
-    }
 }
 
 fn open_private(path: &Path) -> Result<File> {
@@ -377,6 +380,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = StateStore {
             directory: directory.path().to_owned(),
+            discovered_roots: Arc::default(),
         };
         fs::write(store.state_path(), br#"{"repositories":[]}"#).unwrap();
         assert!(
@@ -387,8 +391,14 @@ mod tests {
                 .contains("incompatible super state schema")
         );
 
-        fs::write(store.state_path(), br#"{"schema_version":2,"repositories":[]}"#).unwrap();
-        assert!(store.load().unwrap_err().to_string().contains("expected version 1"));
+        fs::write(store.state_path(), br#"{"schema_version":3,"repositories":[]}"#).unwrap();
+        assert!(
+            store
+                .load()
+                .unwrap_err()
+                .to_string()
+                .contains("incompatible super state schema")
+        );
     }
 
     #[test]
@@ -396,6 +406,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = StateStore {
             directory: directory.path().to_owned(),
+            discovered_roots: Arc::default(),
         };
         fs::write(store.state_path(), br#"{"schema_version":1,"mystery":true}"#).unwrap();
         assert!(store.load().unwrap_err().to_string().contains("could not read"));
@@ -428,6 +439,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = StateStore {
             directory: directory.path().to_owned(),
+            discovered_roots: Arc::default(),
         };
         store.save_api_key("pup_live_test").unwrap();
         fs::set_permissions(store.api_key_path(), fs::Permissions::from_mode(0o644)).unwrap();

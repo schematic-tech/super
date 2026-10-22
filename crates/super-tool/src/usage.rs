@@ -17,6 +17,7 @@ pub async fn run(store: &StateStore, api_url: &str, args: &UsageArgs, ui: &Ui) -
     let repository_id = match args.repo.as_deref() {
         Some(".") => {
             let git = GitRepository::discover(&std::env::current_dir()?)?;
+            let state = store.load_for(&git)?;
             Some(find_repository(&state, &git.root)
                 .context("this repository is not linked to Super\n  Run `super usage` for all repositories, or select a repository with `--repo NAME`.")?
                 .workspace_id)

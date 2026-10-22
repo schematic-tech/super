@@ -46,6 +46,18 @@ pub fn canonicalize_selector(repository_root: &Path, current_directory: &Path, s
     Ok(name_selector.map_or(path.clone(), |name| format!("{path}::{name}")))
 }
 
+pub fn canonicalize_source_selector(
+    repository: &GitRepository,
+    commit: &str,
+    current: &Path,
+    selector: &str,
+) -> Result<String> {
+    let selector = canonicalize_selector(&repository.root, current, selector)?;
+    let (path, name) = split_selector(&selector)?;
+    let path = repository.source_path_at_commit(commit, path)?;
+    Ok(name.map_or(path.clone(), |name| format!("{path}::{name}")))
+}
+
 /// Match a repository-relative selector against a previously checked declaration.
 pub fn selector_matches(supertest: &Supertest, selector: &str) -> bool {
     selector == "."
@@ -63,7 +75,7 @@ pub fn discover(
 ) -> Result<Discovery> {
     let (path_selector, name_selector) = split_selector(selector)?;
     let path = repository_relative(&repository.root, current_directory, Path::new(path_selector))?;
-    let path_text = path_to_git(&path);
+    let path_text = repository.source_path_at_commit(commit_oid, &path_to_git(&path))?;
     let files = repository.files_at_commit(commit_oid)?;
     let is_file = files.iter().any(|file| file == &path_text);
     let prefix = if path_text == "." {

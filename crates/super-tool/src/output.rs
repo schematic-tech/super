@@ -412,6 +412,28 @@ impl Ui {
         Self::stderr_lines(&[line]);
     }
 
+    pub fn source_link_warnings(files: &[super_types::RevisionFile]) {
+        let warnings = super_types::source_link_warnings(
+            files
+                .iter()
+                .map(|file| (file.path.as_str(), file.symlink_target.as_deref())),
+        );
+        if warnings.is_empty() {
+            return;
+        }
+        let plural = if warnings.len() == 1 { "" } else { "s" };
+        let details = warnings
+            .iter()
+            .map(|warning| format!("  {warning}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Like other CLI notices, warnings stay on stderr so JSON stdout keeps its envelope.
+        Self::stderr_lines(&[Line::default().push("! ", Ink::Warning, true).plain(format!(
+            "source contains {} unresolved symlink{plural}:\n{details}\nThe links are preserved.",
+            warnings.len(),
+        ))]);
+    }
+
     pub fn update_available(&self, current: &str, latest: &semver::Version) {
         if self.json {
             return;

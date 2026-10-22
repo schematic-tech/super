@@ -85,7 +85,7 @@ fn login_routes_from_key_and_restores_links_when_switching_back() {
     let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(state["api_url"], first);
     let repository = json!({"root":"/work/repo","common_git_dir":"/work/repo/.git","association_id":"preserved","workspace_id":Uuid::new_v4(),"name":"repo","last_seen_oid":null,"temporary_commits":{},"source_hashes":{},"revisions":{},"pending_submissions":[]});
-    state["repositories"] = json!([repository]);
+    state["unmigrated"] = json!({first.clone(): {"repositories": [repository], "unlinked_repositories": []}});
     std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
     let (second, key, server) = endpoint(1);
     let output = login(&profile, &key, &[]);
@@ -93,17 +93,14 @@ fn login_routes_from_key_and_restores_links_when_switching_back() {
     server.join().unwrap();
     let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(state["api_url"], second);
-    assert_eq!(state["repositories"], json!([]));
-    assert_eq!(
-        state["other_api_repositories"][&first]["repositories"],
-        json!([repository])
-    );
+    assert!(state["worktrees"].as_array().unwrap().is_empty());
+    assert_eq!(state["unmigrated"][&first]["repositories"], json!([repository]));
 
     let output = login(&profile, &first_key, &[]);
     assert!(output.status.success(), "{output:?}");
     first_server.join().unwrap();
     state = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(state["repositories"], json!([repository]));
+    assert_eq!(state["unmigrated"][&first]["repositories"], json!([repository]));
     assert_eq!(
         std::fs::read_to_string(profile.path().join("api-key")).unwrap(),
         first_key

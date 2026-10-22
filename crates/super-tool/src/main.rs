@@ -114,7 +114,7 @@ async fn fix_command(store: &StateStore, api_url: &str, args: FixArgs, ui: &Ui) 
     let selector = if check_id.is_none() {
         args.target
             .as_deref()
-            .map(|target| discovery::canonicalize_selector(&local.root, &current, target))
+            .map(|target| discovery::canonicalize_source_selector(&git, &git.head()?.oid, &current, target))
             .transpose()?
     } else {
         None
@@ -353,9 +353,9 @@ fn unlink_repository(store: &StateStore, path: Option<&Path>, ui: &Ui) -> Result
 }
 
 async fn link_repository(store: &StateStore, api_url: &str, path: &Path, ui: &Ui) -> Result<()> {
-    let state = store.load()?;
-    let client = authenticated_client(api_url, &state)?;
     let git = git::GitRepository::discover(path)?;
+    let state = store.load_for(&git)?;
+    let client = authenticated_client(api_url, &state)?;
     require_committed_source(&git)?;
     let head = git.head()?;
     let prior = state
@@ -407,6 +407,7 @@ async fn link_repository(store: &StateStore, api_url: &str, path: &Path, ui: &Ui
     if let Some(snapshot) = &snapshot {
         report_exclusions(ui, &snapshot.excluded);
     }
+    Ui::source_link_warnings(&revision.files);
     store.update(|state| {
         let mut revisions = prior.as_ref().map(|value| value.revisions.clone()).unwrap_or_default();
         revisions.insert(
@@ -481,7 +482,7 @@ async fn start_checks(store: &StateStore, api_url: &str, options: StartCheckOpti
     let client = authenticated_client(api_url, &state)?;
     let (discovery_directory, selector) = start_check_discovery_scope(&git.root, &current, options.selector);
     let problems = if options.problems {
-        let selector = discovery::canonicalize_selector(&git.root, discovery_directory, selector)?;
+        let selector = discovery::canonicalize_source_selector(&git, &git.head()?.oid, discovery_directory, selector)?;
         let problems = latest_run_problems(&client, local.workspace_id, &selector).await?;
         if problems.is_empty() {
             ui.success(if selector == "." {
@@ -536,6 +537,7 @@ async fn start_checks(store: &StateStore, api_url: &str, options: StartCheckOpti
     if let Some(snapshot) = &snapshot {
         report_exclusions(ui, &snapshot.excluded);
     }
+    Ui::source_link_warnings(&revision.files);
     record_admitted_revision(
         store,
         &local.association_id,
@@ -550,7 +552,7 @@ async fn start_checks(store: &StateStore, api_url: &str, options: StartCheckOpti
         retain_problem_supertests(&problems, &mut discovered, ui)?;
     }
     validate_submission_size(discovered.supertests.len())?;
-    let request = create_check_request(revision.id, discovered);
+    let request = create_check_request(revision.id, &commit, discovered);
     let (request_sha256, idempotency_key) = submission_idempotency(store, &local.association_id, &request)?;
     let response = submit_checks(&client, local.workspace_id, &request, &idempotency_key, ui).await?;
     complete_submission(store, &local.association_id, &request_sha256)?;
@@ -617,9 +619,10 @@ async fn submit_checks(
     ).await
 }
 
-fn create_check_request(revision_id: Uuid, discovery: discovery::Discovery) -> CreateChecksRequest {
+fn create_check_request(revision_id: Uuid, commit: &CommitRef, discovery: discovery::Discovery) -> CreateChecksRequest {
     CreateChecksRequest {
         revision_id,
+        reported_git_commit: Some(commit.oid.clone()),
         selector: discovery.canonical_selector,
         certify: false,
         supertests: discovery.supertests,
@@ -865,7 +868,7 @@ async fn check_status(store: &StateStore, api_url: &str, args: StatusArgs, ui: &
                     Results::from_submission(&local, Some(head), client.submission(local.workspace_id, id).await?)
                 }
                 Some(Target::Selector(selector)) => {
-                    let selector = discovery::canonicalize_selector(&local.root, &current, selector)?;
+                    let selector = discovery::canonicalize_source_selector(&git, &head.oid, &current, selector)?;
                     let checks = client.latest_checks(local.workspace_id, &selector).await?;
                     Results::from_checks(&local, head, selector, checks)
                 }
@@ -923,7 +926,7 @@ async fn cancel_checks(store: &StateStore, api_url: &str, target: &cli::TargetAr
             client.submission(local.workspace_id, id).await?,
         ),
         Target::Selector(selector) => {
-            let selector = discovery::canonicalize_selector(&local.root, &current, selector)?;
+            let selector = discovery::canonicalize_source_selector(&git, &git.head()?.oid, &current, selector)?;
             let checks = client.latest_checks(local.workspace_id, &selector).await?;
             if checks.is_empty() {
                 bail!("no checks match {selector}");
@@ -1045,9 +1048,9 @@ fn state_store_api_key(_state: &LocalState) -> Result<String> {
 }
 
 fn local_context(store: &StateStore, path: Option<&Path>) -> Result<(LocalState, LocalRepository, git::GitRepository)> {
-    let state = store.load()?;
     let directory = path.map_or_else(std::env::current_dir, |path| Ok(path.to_path_buf()))?;
     let git = git::GitRepository::discover(&directory)?;
+    let state = store.load_for(&git)?;
     let local = find_repository(&state, &git.root).cloned().with_context(|| {
         format!(
             "repository is not linked\n  Run `super link .` from {}.",

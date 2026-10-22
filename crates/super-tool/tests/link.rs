@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use uuid::Uuid;
 
+#[path = "support/state.rs"]
+mod local_state;
+
 const NOW: &str = "2026-09-14T00:00:00Z";
 
 #[derive(Default)]
@@ -26,6 +29,8 @@ struct Remote {
     requests: Vec<(String, String, Value)>,
     workspace_error: Option<u16>,
     fail_finalize: bool,
+    reuse_content_revisions: bool,
+    wrong_check_commit: bool,
 }
 
 impl Remote {
@@ -52,12 +57,28 @@ impl Remote {
                 if let Some(parent) = body["parent_id"].as_str() {
                     assert_eq!(self.revisions[parent]["workspace_id"], *workspace);
                 }
-                let id = Uuid::new_v4().to_string();
-                let revision = json!({
-                    "id": id, "workspace_id": workspace, "parent_id": body["parent_id"],
-                    "reported_git_commit": body["reported_git_commit"], "tree_sha256": body["tree_sha256"],
-                    "files": body["files"], "state": "complete", "created_at": NOW, "completed_at": NOW,
+                assert!(body.get("reported_git_commit").is_none());
+                // A source revision can be shared by several Git commits.
+                let reused = self
+                    .reuse_content_revisions
+                    .then(|| {
+                        self.revisions.values().find(|revision| {
+                            revision["workspace_id"] == *workspace
+                                && revision["parent_id"] == body["parent_id"]
+                                && revision["tree_sha256"] == body["tree_sha256"]
+                                && revision["files"] == body["files"]
+                        })
+                    })
+                    .flatten()
+                    .cloned();
+                let revision = reused.unwrap_or_else(|| {
+                    json!({
+                        "id": Uuid::new_v4().to_string(), "workspace_id": workspace, "parent_id": body["parent_id"],
+                        "tree_sha256": body["tree_sha256"],
+                        "files": body["files"], "state": "complete", "created_at": NOW, "completed_at": NOW,
+                    })
                 });
+                let id = revision["id"].as_str().unwrap().to_owned();
                 self.revisions.insert(id.clone(), revision.clone());
                 (
                     201,
@@ -82,17 +103,20 @@ impl Remote {
     fn submit(&mut self, workspace: &str, body: &Value) -> Value {
         let revision = &self.revisions[body["revision_id"].as_str().unwrap()];
         assert_eq!(revision["workspace_id"], workspace);
-        let check = self
+        let mut check = self
             .checks
             .iter()
-            .find(|check| check["revision"]["id"] == revision["id"])
+            .find(|check| {
+                check["revision"]["id"] == revision["id"]
+                    && check["revision"]["reported_git_commit"] == body["reported_git_commit"]
+            })
             .cloned()
             .unwrap_or_else(|| {
                 let check = json!({
                     "repository_id": workspace, "number": self.checks.len() + 1,
                     "supertest": body["supertests"][0],
                     "revision": {"id": revision["id"], "tree_sha256": revision["tree_sha256"],
-                        "reported_git_commit": revision["reported_git_commit"]},
+                        "reported_git_commit": body["reported_git_commit"]},
                     "terminal": false, "problematic": false, "result": null, "operational_error": null,
                     "presentation": {"status": {"marker": "●", "label": "checking", "tone": "active"}, "history": {}},
                     "created_at": NOW, "updated_at": NOW,
@@ -100,6 +124,9 @@ impl Remote {
                 self.checks.push(check.clone());
                 check
             });
+        if self.wrong_check_commit {
+            check["revision"]["reported_git_commit"] = json!("0".repeat(40));
+        }
         json!({
             "submission": {"id": Uuid::new_v4(), "repository_id": workspace, "selector": body["selector"],
                 "check_numbers": [check["number"]], "created_at": NOW},
@@ -225,7 +252,35 @@ impl Fixture {
     }
 
     fn state(&self) -> Value {
-        serde_json::from_slice(&std::fs::read(self.directory.path().join("profile/state.json")).unwrap()).unwrap()
+        local_state::read(&self.directory.path().join("profile"))
+    }
+
+    fn commit(&self, message: &str) {
+        git(
+            &self.directory.path().join("repository"),
+            &[
+                "-c",
+                "user.name=Super Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ],
+        );
+    }
+
+    fn symlink(&self, path: &str, target: &str) {
+        let root = self.directory.path().join("repository");
+        git(&root, &["config", "core.symlinks", "false"]);
+        let destination = root.join(path);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::write(destination, target).unwrap();
+        let oid = git(&root, &["hash-object", "-w", "--", path]);
+        git(
+            &root,
+            &["update-index", "--add", "--cacheinfo", &format!("120000,{oid},{path}")],
+        );
     }
 }
 
@@ -298,10 +353,11 @@ fn link_reports_all_unsupported_entries_and_accepts_the_suggested_ignores() {
     let message = error["data"]["message"].as_str().unwrap();
     let text = fixture.pup(&["link"]);
     assert_eq!(text.status.code(), Some(2));
-    for path in ["first-link", "vendor/second-link", "vendor/module"] {
-        assert!(message.contains(path), "{message}");
-        assert!(String::from_utf8_lossy(&text.stderr).contains(path), "{text:?}");
-    }
+    assert!(message.contains("vendor/module"), "{message}");
+    assert!(
+        String::from_utf8_lossy(&text.stderr).contains("vendor/module"),
+        "{text:?}"
+    );
     assert_eq!(fixture.remote.lock().unwrap().revisions.len(), revisions_before);
     assert!(!root.join(".superignore").exists());
 
@@ -328,6 +384,150 @@ fn link_reports_all_unsupported_entries_and_accepts_the_suggested_ignores() {
     );
     fixture.ok(&["link", "--json"]);
     assert_eq!(fixture.remote.lock().unwrap().revisions.len(), revisions_before + 1);
+    let remote = fixture.remote.lock().unwrap();
+    assert!(remote.revisions.values().any(|revision| {
+        revision["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "first-link" && file["symlink_target"] == "example.py")
+    }));
+}
+
+#[test]
+fn invalid_links_are_reported_together_and_exclusions_preserve_their_aliases() {
+    let fixture = Fixture::new();
+    fixture.ok(&["link", "--json"]);
+    let root = fixture.directory.path().join("repository");
+    for (path, target) in [
+        ("alias", "external"),
+        ("absolute", "/outside"),
+        ("external", "../outside"),
+        ("deep/up", ".."),
+        ("indirect", "deep/up/../outside"),
+        ("metadata", ".git/config"),
+        ("cycle-a", "cycle-b"),
+        ("cycle-b", "cycle-a"),
+    ] {
+        fixture.symlink(path, target);
+    }
+    fixture.commit("Source with invalid links");
+    let initial_tree = git(&root, &["rev-parse", "HEAD^{tree}"]);
+    let revisions_before = fixture.remote.lock().unwrap().revisions.len();
+    let output = fixture.pup(&["link", "--json"]);
+    assert_eq!(output.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["data"]["code"], "operation_failed");
+    let message = error["data"]["message"].as_str().unwrap();
+    assert!(message.starts_with("source contains 4 invalid symlinks:"), "{message}");
+    let expected_links = [
+        "\"absolute\" -> \"/outside\"",
+        "\"external\" -> \"../outside\"",
+        "\"indirect\" -> \"deep/up/../outside\"",
+        "\"metadata\" -> \".git/config\"",
+    ];
+    for expected in expected_links {
+        assert!(message.contains(expected), "{message}");
+    }
+    assert!(!message.contains("related link"));
+    assert!(!message.contains("\"alias\""));
+    let text = fixture.pup(&["link"]);
+    assert_eq!(text.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&text.stderr);
+    assert!(stderr.contains("source contains 4 invalid symlinks:"), "{stderr}");
+    assert!(stderr.contains(".superignore"), "{stderr}");
+    for expected in expected_links {
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+    let check = fixture.pup(&["check", "--commit", "HEAD", "--detach", "--json"]);
+    assert_eq!(check.status.code(), Some(2));
+    let check_error: Value = serde_json::from_slice(&check.stdout).unwrap();
+    assert_eq!(check_error["data"]["message"], message);
+    assert_eq!(fixture.remote.lock().unwrap().revisions.len(), revisions_before);
+    assert_eq!(git(&root, &["rev-parse", "HEAD^{tree}"]), initial_tree);
+    assert!(!root.join(".superignore").exists());
+    assert_eq!(std::fs::read_to_string(root.join("external")).unwrap(), "../outside");
+
+    let suggestions = message
+        .split_once("To exclude these entries, append these lines to .superignore.\n")
+        .unwrap()
+        .1
+        .split("\n\n")
+        .next()
+        .unwrap();
+    assert_eq!(suggestions, "/absolute\n/external\n/indirect\n/metadata");
+    std::fs::write(root.join(".superignore"), format!("{suggestions}\n")).unwrap();
+    git(&root, &["add", ".superignore"]);
+    fixture.commit("Exclude invalid link targets");
+    let linked = fixture.pup(&["link", "--json"]);
+    assert!(linked.status.success(), "{linked:?}");
+    let warnings = String::from_utf8(linked.stderr).unwrap();
+    assert!(warnings.contains("3 unresolved symlinks"), "{warnings}");
+    assert!(warnings.contains("\"alias\" -> \"external\""), "{warnings}");
+    assert!(warnings.contains("symlink cycle"), "{warnings}");
+    let remote = fixture.remote.lock().unwrap();
+    let files = remote
+        .revisions
+        .values()
+        .find_map(|revision| {
+            let files = revision["files"].as_array()?;
+            files.iter().any(|file| file["path"] == "alias").then_some(files)
+        })
+        .unwrap();
+    for path in ["alias", "deep/up", "cycle-a", "cycle-b"] {
+        assert!(files.iter().any(|file| file["path"] == path), "{files:?}");
+    }
+    assert!(!files.iter().any(|file| file["path"] == "external"));
+    drop(remote);
+    for path in ["alias", "cycle-a"] {
+        let selected = fixture.pup(&["check", path, "--commit", "HEAD", "--detach", "--json"]);
+        assert_eq!(selected.status.code(), Some(2), "{selected:?}");
+    }
+}
+
+#[test]
+fn broken_links_warn_without_blocking_fresh_or_cached_checks() {
+    let fixture = Fixture::new();
+    let root = fixture.directory.path().join("repository");
+    std::fs::write(root.join(".superignore"), "/example.py\n/ignored-link\n").unwrap();
+    git(&root, &["add", ".superignore"]);
+    for (path, target) in [
+        ("excluded", "example.py"),
+        ("missing", "generated/output"),
+        ("misleading", "absent/../supertests.py"),
+        ("ignored-link", "absent"),
+        ("valid", "supertests.py"),
+    ] {
+        fixture.symlink(path, target);
+    }
+    fixture.commit("Links to missing and excluded source");
+    std::fs::write(root.join(".git/info/exclude"), "/generated/\n").unwrap();
+    std::fs::create_dir(root.join("generated")).unwrap();
+    std::fs::write(root.join("generated/output"), "local-only output").unwrap();
+    for args in [
+        &["link", "--json"][..],
+        &["link", "--json"],
+        &["check", "--commit", "HEAD", "--detach", "--json"],
+    ] {
+        let output = fixture.pup(args);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(stderr.matches("3 unresolved symlinks").count(), 1, "{stderr}");
+        assert!(stderr.contains("\"excluded\" -> \"example.py\""), "{stderr}");
+        assert!(stderr.contains("\"missing\" -> \"generated/output\""), "{stderr}");
+        assert!(
+            !stderr.contains("\"ignored-link\"") && !stderr.contains("related link"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("\"valid\""), "{stderr}");
+    }
+    assert_eq!(fixture.remote.lock().unwrap().revisions.len(), 1);
+    let selected = fixture.pup(&["check", "misleading", "--commit", "HEAD", "--detach", "--json"]);
+    assert_eq!(selected.status.code(), Some(2), "{selected:?}");
+    let error: Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert!(error["data"]["message"].as_str().unwrap().contains("missing"));
 }
 
 #[test]
@@ -461,6 +661,104 @@ fn second_commit(fixture: &Fixture) -> String {
         ],
     );
     git(&root, &["rev-parse", "HEAD"])
+}
+
+#[test]
+fn skipped_commits_share_source_without_losing_check_attribution() {
+    let fixture = Fixture::new();
+    fixture.remote.lock().unwrap().reuse_content_revisions = true;
+    fixture.ok(&["link", "--json"]);
+    let root = fixture.directory.path().join("repository");
+    let first = git(&root, &["rev-parse", "HEAD"]);
+    for message in ["Skipped commit", "Current commit"] {
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=Super Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+        );
+    }
+    let current = git(&root, &["rev-parse", "HEAD"]);
+    for _ in 0..2 {
+        fixture.ok(&["check", "--detach", "--json"]);
+    }
+    let state = fixture.state();
+    let revisions = &state["repositories"][0]["revisions"];
+    assert_eq!(revisions[&first], revisions[&current]);
+    let remote = fixture.remote.lock().unwrap();
+    assert_eq!(remote.revisions.len(), 1);
+    assert_eq!(remote.checks.len(), 1);
+    assert_eq!(remote.checks[0]["revision"]["reported_git_commit"], current);
+}
+
+#[test]
+fn mismatched_check_attribution_is_rejected_and_keeps_the_retry_journal() {
+    let fixture = Fixture::new();
+    fixture.ok(&["link", "--json"]);
+    fixture.remote.lock().unwrap().wrong_check_commit = true;
+    let failed = fixture.pup(&["check", "--detach", "--json"]);
+    assert_eq!(failed.status.code(), Some(2));
+    let error: Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert!(
+        error["data"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("different Git commit")
+    );
+    assert_eq!(
+        fixture.state()["repositories"][0]["pending_submissions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    fixture.remote.lock().unwrap().wrong_check_commit = false;
+    fixture.ok(&["check", "--detach", "--json"]);
+    assert!(
+        fixture.state()["repositories"][0]["pending_submissions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fixture.remote.lock().unwrap().checks.len(), 1);
+}
+
+#[test]
+fn dirty_then_real_commit_share_source_and_keep_separate_checks() {
+    let fixture = Fixture::new();
+    fixture.remote.lock().unwrap().reuse_content_revisions = true;
+    fixture.ok(&["link", "--json"]);
+    let root = fixture.directory.path().join("repository");
+    std::fs::write(root.join("example.py"), "def example():\n    return 2\n").unwrap();
+    fixture.ok(&["check", "--dirty", "--detach", "--json"]);
+    let checked = fixture.remote.lock().unwrap().checks[0]["revision"].clone();
+    let temporary = checked["reported_git_commit"].as_str().unwrap();
+    let committed = second_commit(&fixture);
+    assert_ne!(temporary, committed);
+    assert_eq!(
+        git(&root, &["rev-parse", &format!("{temporary}^{{tree}}")]),
+        git(&root, &["rev-parse", "HEAD^{tree}"])
+    );
+    for _ in 0..2 {
+        fixture.ok(&["link", "--json"]);
+        fixture.ok(&["check", "--detach", "--json"]);
+    }
+    let state = fixture.state();
+    let revisions = &state["repositories"][0]["revisions"];
+    assert_eq!(revisions[temporary], revisions[&committed]);
+    let remote = fixture.remote.lock().unwrap();
+    assert_eq!(remote.revisions.len(), 2);
+    assert_eq!(remote.checks.len(), 2);
+    assert_eq!(remote.checks[0]["revision"], checked);
+    assert_eq!(remote.checks[1]["revision"]["id"], checked["id"]);
+    assert_eq!(remote.checks[1]["revision"]["reported_git_commit"], committed);
 }
 
 #[test]
