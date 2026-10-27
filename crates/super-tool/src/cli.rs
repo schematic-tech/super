@@ -55,7 +55,7 @@ pub enum Command {
     Check(CheckArgs),
     /// Inspect existing checks without starting work or syncing source.
     Status(StatusArgs),
-    /// Show account quota, token usage, and recent supertest checks.
+    /// Show account quota, credits, token usage, and recent supertest checks.
     Usage(UsageArgs),
     /// Cancel shared checks for all observers by path, run, or check number.
     Cancel(CancelArgs),

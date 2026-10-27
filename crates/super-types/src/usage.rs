@@ -171,4 +171,22 @@ pub struct TokenQuota {
     pub remaining: u64,
     pub exhausted: bool,
     pub next_available_at: Option<DateTime<Utc>>,
+    /// Separate renewable allowance and non-expiring credit balance. Older servers omit this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<TokenBalance>,
+}
+
+/// One purchased credit represents this many tokens, matching the billing catalog.
+pub const TOKENS_PER_CREDIT: u64 = 1_000;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct TokenBalance {
+    #[cfg_attr(feature = "typescript", ts(type = "number"))]
+    pub weekly_limit: u64,
+    #[cfg_attr(feature = "typescript", ts(type = "number"))]
+    pub weekly_remaining: u64,
+    #[cfg_attr(feature = "typescript", ts(type = "number"))]
+    pub purchased_tokens: u64,
 }

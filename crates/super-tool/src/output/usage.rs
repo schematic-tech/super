@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use super_types::usage::{CheckStatus, Period, TokenQuota, UsageQuery, UsageReport};
+use super_types::usage::{CheckStatus, Period, TOKENS_PER_CREDIT, TokenQuota, UsageQuery, UsageReport};
 
 use super::{
     Ui,
@@ -10,10 +10,48 @@ use super::{
 #[cfg(test)]
 mod tests;
 
+const BILLING_URL: &str = "https://platform.schematic.tech/billing/#add-credits";
+
 impl Ui {
     pub fn usage_report(report: &UsageReport, query: &UsageQuery, timezone: Tz) {
         Self::print_lines(&report_lines(report, query, timezone, Self::width().saturating_sub(4)));
     }
+
+    pub(super) fn quota_exhausted(error: &anyhow::Error) {
+        Self::stderr_lines(&exhausted_lines(
+            crate::api::quota_recovery(error),
+            crate::usage::local_timezone(),
+        ));
+    }
+}
+
+fn exhausted_lines(recovery: Option<DateTime<Utc>>, timezone: Tz) -> Vec<Line> {
+    let mut lines = vec![
+        Line::default().push("! Quota and credits exhausted", Ink::Warning, true),
+        Line::default(),
+        Line::default().muted("Running checks will finish."),
+    ];
+    if let Some(at) = recovery {
+        lines.push(Line::default().muted(format!(
+            "Further checks available {} {}",
+            timestamp(at, timezone),
+            at.with_timezone(&timezone).format("%Z")
+        )));
+    }
+    lines.push(Line::default());
+    billing_lines(&mut lines);
+    lines.push(Line::default());
+    lines.push(
+        Line::default()
+            .muted("View balances: ")
+            .push("super usage", Ink::Accent, true),
+    );
+    lines
+}
+
+fn billing_lines(lines: &mut Vec<Line>) {
+    lines.push(Line::default().plain("Buy credits or manage your plan:"));
+    lines.push(Line::link(BILLING_URL));
 }
 
 fn report_lines(report: &UsageReport, query: &UsageQuery, timezone: Tz, width: usize) -> Vec<Line> {
@@ -26,11 +64,14 @@ fn report_lines(report: &UsageReport, query: &UsageQuery, timezone: Tz, width: u
             .plain(timezone.name().replace('_', " ")),
         Line::default(),
     ];
-    lines.push(
+    let separated = report.quota.as_ref().is_some_and(|quota| quota.balance.is_some());
+    lines.push(if separated {
         Line::default()
             .bold("Weekly quota")
-            .muted(" · all repositories · rolling 7 days"),
-    );
+            .muted(" · all repositories · rolling 7 days")
+    } else {
+        Line::default().bold("Account balance").muted(" · all repositories")
+    });
     quota_lines(&mut lines, report.quota.as_ref(), timezone);
     let period = match query.period {
         Period::Today => "Today",
@@ -157,8 +198,12 @@ fn quota_lines(lines: &mut Vec<Line>, quota: Option<&TokenQuota>, timezone: Tz) 
         lines.push(Line::default().muted("Quota unavailable."));
         return;
     };
-    let limit = quota.limit;
-    let remaining = quota.remaining;
+    let (limit, remaining) = quota
+        .balance
+        .as_ref()
+        .map_or((quota.limit, quota.remaining), |balance| {
+            (balance.weekly_limit, balance.weekly_remaining)
+        });
     let remaining = remaining.min(limit);
     let percent = if limit == 0 {
         0
@@ -190,26 +235,55 @@ fn quota_lines(lines: &mut Vec<Line>, quota: Option<&TokenQuota>, timezone: Tz) 
             .muted(" · ")
             .plain(format!("{} of {} tokens", compact(remaining), compact(limit))),
     );
-    if quota.exhausted {
-        lines.push(Line::default().push(
-            "New checks are paused. Running checks will finish.",
-            Ink::Warning,
-            false,
-        ));
+    if let Some(balance) = &quota.balance {
+        lines.push(
+            Line::default()
+                .bold("Credits")
+                .muted(" · ")
+                .plain(format!("{} available", credits(balance.purchased_tokens))),
+        );
+    } else {
+        lines
+            .push(Line::default().muted("Separate weekly quota and credit balances are unavailable from this server."));
     }
     if let Some(next) = quota.next_available_at {
         lines.push(Line::default().muted(format!(
             "{} {}",
             if quota.exhausted {
-                "Checks available"
+                "Further checks available"
             } else {
-                "More tokens available"
+                "More quota available"
             },
             timestamp(next, timezone)
         )));
-    } else if quota.exhausted {
-        lines.push(Line::default().muted("Contact your account administrator to increase your quota."));
     }
+    if quota.exhausted {
+        lines.push(Line::default());
+        lines.push(
+            Line::default()
+                .push("New checks are paused.", Ink::Warning, true)
+                .muted(" Running checks will finish."),
+        );
+        billing_lines(lines);
+    }
+}
+
+fn credits(tokens: u64) -> String {
+    let whole = tokens / TOKENS_PER_CREDIT;
+    let fraction = tokens % TOKENS_PER_CREDIT;
+    let digits = whole.to_string();
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    if fraction != 0 {
+        grouped.push('.');
+        grouped.push_str(format!("{fraction:03}").trim_end_matches('0'));
+    }
+    grouped
 }
 
 fn timestamp(value: DateTime<Utc>, timezone: Tz) -> String {

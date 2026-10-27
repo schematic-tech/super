@@ -388,10 +388,10 @@ impl Ui {
                 "error",
                 &serde_json::json!({"code": if exhausted { super_types::api::EXHAUSTED_ERROR_CODE } else { "operation_failed" }, "message": format!("{error:#}")}),
             );
+        } else if exhausted {
+            Self::quota_exhausted(error);
         } else {
-            Self::stderr_lines(&[Line::default()
-                .push("! ", if exhausted { Ink::Warning } else { Ink::Fail }, true)
-                .plain(format!("{error:#}"))]);
+            Self::stderr_lines(&[Line::default().push("! ", Ink::Fail, true).plain(format!("{error:#}"))]);
         }
     }
 
@@ -469,8 +469,14 @@ impl Ui {
 
     fn stderr_lines(lines: &[Line]) {
         let width = Self::width();
-        for line in lines.iter().flat_map(|line| line.wrapped(width.saturating_sub(4))) {
-            eprintln!("{}", line.render(width, 2).trim_end());
+        for line in lines {
+            if line.soft_wrap {
+                eprintln!("{}", line.render_for_stderr(width.max(line.width() + 4), 2).trim_end());
+            } else {
+                for line in line.wrapped(width.saturating_sub(4)) {
+                    eprintln!("{}", line.render_for_stderr(width, 2).trim_end());
+                }
+            }
         }
     }
 

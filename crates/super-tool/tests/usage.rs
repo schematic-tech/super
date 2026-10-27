@@ -265,11 +265,14 @@ fn exhausted_reports_succeed_and_authentication_errors_are_actionable() {
         value["quota"]["remaining"] = json!(0);
         value["quota"]["used"] = value["quota"]["limit"].clone();
         value["quota"]["exhausted"] = json!(true);
+        value["quota"]["balance"]["weeklyRemaining"] = json!(0);
+        value["quota"]["balance"]["purchasedTokens"] = json!(0);
         (200, value)
     });
     let output = fixture.run(&["usage"]);
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("New checks are paused. Running checks will finish."));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("https://platform.schematic.tech/billing/#add-credits"));
     let denied = Fixture::new(|_| {
         (
             401,

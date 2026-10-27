@@ -48,7 +48,7 @@ fn report_has_compact_tables_and_separates_bold_context_from_muted_headings() {
     let lines = report_lines(&report(), &query(), chrono_tz::UTC, 76);
     assert_eq!(
         text(&lines),
-        "Token usage · Sep 25, 12:42 AM · UTC\n\nWeekly quota · all repositories · rolling 7 days\n━━━━━━━━━━━━━━━─────  75% remaining · 750M of 1B tokens\nMore tokens available Sep 26, 12:30 AM\n\nLast 30 days · All repositories\nTOKENS USED · SUPERTESTS RUN\n     228.7K · 3\n\nRecent checks\n\nSUPERTEST             · REPOSITORY · STATUS   · TOKENS\namounts_stay_positive · payments   · pass     · 128.4K\nrefunds_are_bounded   · payments   · fail     ·  92.1K\nroundtrip             · parser     · checking ·   8.2K+\n\nShowing 3 of 3 checks\n+ Usage is still being reported"
+        "Token usage · Sep 25, 12:42 AM · UTC\n\nWeekly quota · all repositories · rolling 7 days\n━━━━━━━━━━━━━━━─────  75% remaining · 750M of 1B tokens\nCredits · 1,234.567 available\nMore quota available Sep 26, 12:30 AM\n\nLast 30 days · All repositories\nTOKENS USED · SUPERTESTS RUN\n     228.7K · 3\n\nRecent checks\n\nSUPERTEST             · REPOSITORY · STATUS   · TOKENS\namounts_stay_positive · payments   · pass     · 128.4K\nrefunds_are_bounded   · payments   · fail     ·  92.1K\nroundtrip             · parser     · checking ·   8.2K+\n\nShowing 3 of 3 checks\n+ Usage is still being reported"
     );
     assert!(
         lines[0]
@@ -98,6 +98,7 @@ fn report_has_compact_tables_and_separates_bold_context_from_muted_headings() {
 fn quota_states_preserve_unknowns_and_use_recovery_times_in_the_selected_timezone() {
     let mut data = report();
     let quota = data.quota.as_mut().unwrap();
+    quota.balance = None;
     quota.limit = 1_000;
     let mut lines = Vec::new();
     for (remaining, ink, label) in [
@@ -122,11 +123,11 @@ fn quota_states_preserve_unknowns_and_use_recovery_times_in_the_selected_timezon
     lines.clear();
     quota_lines(&mut lines, Some(quota), chrono_tz::Australia::Sydney);
     assert!(text(&lines).contains("0% remaining · 0 of 0 tokens"));
-    assert!(text(&lines).contains("Checks available Sep 26, 10:30 AM"));
+    assert!(text(&lines).contains("Further checks available Sep 26, 10:30 AM"));
     quota.next_available_at = None;
     lines.clear();
     quota_lines(&mut lines, Some(quota), chrono_tz::UTC);
-    assert!(text(&lines).contains("Contact your account administrator"));
+    assert!(text(&lines).contains("https://platform.schematic.tech/billing/#add-credits"));
 }
 
 #[test]
@@ -206,4 +207,79 @@ fn quotas_require_finite_numeric_limits_and_balances() {
         invalid[field] = serde_json::Value::Null;
         assert!(serde_json::from_value::<TokenQuota>(invalid).is_err());
     }
+}
+
+#[test]
+fn credits_are_separate_from_renewable_quota_and_preserve_small_balances() {
+    for (tokens, expected) in [(0, "0"), (1, "0.001"), (1_050, "1.05"), (1_234_567, "1,234.567")] {
+        assert_eq!(credits(tokens), expected);
+    }
+    let mut data = report();
+    let quota = data.quota.as_mut().unwrap();
+    quota.limit = 1_001_000_000;
+    quota.remaining = 1_000_000;
+    let balance = quota.balance.as_mut().unwrap();
+    balance.weekly_remaining = 0;
+    balance.purchased_tokens = 1_000_000;
+    let output = text(&report_lines(&data, &query(), chrono_tz::UTC, 76));
+    assert!(output.contains("0% remaining · 0 of 1B tokens"));
+    assert!(output.contains("Credits · 1,000 available"));
+    assert!(!output.contains("New checks can use your credits"));
+    assert!(!output.contains("do not expire"));
+    assert!(!output.contains("New checks are paused"));
+    assert!(!output.contains("Further checks available"));
+}
+
+#[test]
+fn older_servers_do_not_mislabel_combined_tokens_as_weekly_quota_or_invent_credits() {
+    let mut value = serde_json::to_value(report()).unwrap();
+    value["quota"].as_object_mut().unwrap().remove("balance");
+    let data: UsageReport = serde_json::from_value(value).unwrap();
+    let output = text(&report_lines(&data, &query(), chrono_tz::UTC, 76));
+    assert!(output.contains("Account balance · all repositories"));
+    assert!(output.contains("Separate weekly quota and credit balances are unavailable"));
+    assert!(!output.contains("rolling 7 days"));
+    assert!(!output.contains("Credits · 0"));
+}
+
+#[test]
+fn exhausted_usage_separates_balances_from_warning_and_recovery_actions() {
+    let mut data = report();
+    let quota = data.quota.as_mut().unwrap();
+    quota.exhausted = true;
+    quota.balance.as_mut().unwrap().weekly_remaining = 0;
+    quota.balance.as_mut().unwrap().purchased_tokens = 0;
+    let mut lines = Vec::new();
+    quota_lines(&mut lines, Some(quota), chrono_tz::UTC);
+    assert!(text(&lines).contains(
+        "Credits · 0 available\nFurther checks available Sep 26, 12:30 AM\n\nNew checks are paused. Running checks will finish.\nBuy credits or manage your plan:\nhttps://platform.schematic.tech/billing/#add-credits"
+    ));
+    let link = lines.last().unwrap();
+    assert!(link.soft_wrap);
+    assert_eq!(link.hyperlink.as_deref(), Some(BILLING_URL));
+}
+
+#[test]
+fn exhausted_errors_have_a_heading_local_recovery_time_and_separate_actions() {
+    let at = "2026-10-27T23:54:00Z".parse().unwrap();
+    let lines = exhausted_lines(Some(at), chrono_tz::Australia::Sydney);
+    assert_eq!(
+        text(&lines),
+        "! Quota and credits exhausted\n\nRunning checks will finish.\nFurther checks available Oct 28, 10:54 AM AEDT\n\nBuy credits or manage your plan:\nhttps://platform.schematic.tech/billing/#add-credits\n\nView balances: super usage"
+    );
+    assert!(
+        lines[0]
+            .parts
+            .iter()
+            .all(|(_, ink, bold)| *ink == Ink::Warning && *bold)
+    );
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .parts
+            .iter()
+            .any(|(value, ink, bold)| value == "super usage" && *ink == Ink::Accent && *bold)
+    );
+    assert!(!text(&exhausted_lines(None, chrono_tz::UTC)).contains("Further checks available"));
 }

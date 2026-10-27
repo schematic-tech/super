@@ -60,7 +60,7 @@ pub async fn run(store: &StateStore, api_url: &str, args: &UsageArgs, ui: &Ui) -
     Ok(())
 }
 
-fn local_timezone() -> Tz {
+pub(crate) fn local_timezone() -> Tz {
     // TZ also lets scripts request reproducible calendar boundaries and timestamps.
     std::env::var("TZ")
         .ok()

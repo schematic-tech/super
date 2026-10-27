@@ -392,6 +392,7 @@ fn fixture_response(routes: &mut BTreeMap<String, Value>, path: &str) -> (&'stat
         let status = match response["status"].as_u64().unwrap() {
             200 => "200 OK",
             409 => "409 Conflict",
+            429 => "429 Too Many Requests",
             503 => "503 Service Unavailable",
             status => panic!("unsupported fixture status {status}"),
         };
@@ -411,6 +412,45 @@ fn publish_cancellation(routes: &mut BTreeMap<String, Value>, path: &str, body: 
                 }
             }
         }
+    }
+}
+
+#[test]
+fn exhausted_checks_explain_both_balances_and_do_not_retry_in_human_or_json_output() {
+    for json_output in [false, true] {
+        let fixture = Fixture::configured(false, false, |routes| {
+            routes.insert(
+                format!("POST /v1/super/workspaces/{WORKSPACE}/check-submissions"),
+                json!({"_responses": [{"status": 429, "body": {"error": {
+                    "code": "exhausted",
+                    "message": "exhausted: your weekly token quota and purchased credits are used up",
+                    "help": "Running checks will finish. Buy credits or manage your plan at https://platform.schematic.tech/billing/#add-credits. Run `super usage` to see your balances."
+                }}}]}),
+            );
+        });
+        let args = if json_output {
+            vec!["check", "--json"]
+        } else {
+            vec!["check"]
+        };
+        let output = fixture.run(&args);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let message = if json_output {
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["data"]["code"], "exhausted");
+            value["data"]["message"].as_str().unwrap().to_owned()
+        } else {
+            String::from_utf8(output.stderr).unwrap()
+        };
+        assert!(message.contains(if json_output {
+            "weekly token quota and purchased credits are used up"
+        } else {
+            "Quota and credits exhausted"
+        }));
+        assert!(message.contains("Running checks will finish"));
+        assert!(message.contains("https://platform.schematic.tech/billing/#add-credits"));
+        assert!(message.contains("super usage"));
+        assert_eq!(fixture.service.submissions.lock().unwrap().len(), 1);
     }
 }
 

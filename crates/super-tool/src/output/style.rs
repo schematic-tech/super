@@ -13,6 +13,7 @@ pub(super) enum Ink {
     Muted,
     Accent,
     Activity,
+    Link,
     Pass,
     Fail,
     Warning,
@@ -27,6 +28,7 @@ impl Ink {
             Self::Muted => (176, 182, 197),
             Self::Accent => (209, 177, 245),
             Self::Activity => return Style::new().cyan().bright(),
+            Self::Link => return Style::new().cyan().bright().underlined(),
             Self::Pass => (149, 212, 173),
             Self::Fail => (243, 161, 161),
             Self::Warning => (230, 193, 126),
@@ -42,9 +44,19 @@ pub(super) struct Line {
     pub parts: Vec<(String, Ink, bool)>,
     pub background: Option<(u8, u8, u8)>,
     pub soft_wrap: bool,
+    pub hyperlink: Option<String>,
 }
 
 impl Line {
+    pub fn link(url: &'static str) -> Self {
+        Self {
+            hyperlink: Some(url.into()),
+            ..Self::default()
+        }
+        .push(url, Ink::Link, false)
+        .soft_wrap()
+    }
+
     /// Let the terminal wrap a copyable command without inserting shell-significant newlines.
     pub fn soft_wrap(mut self) -> Self {
         self.soft_wrap = true;
@@ -136,6 +148,19 @@ impl Line {
     /// Render safe spans with a one-cell outer gutter around highlighted backgrounds.
     /// The gutter uses the existing margin, preserving text alignment and content width.
     pub fn render(&self, width: usize, margin: usize) -> String {
+        self.render_on(width, margin, false)
+    }
+
+    pub fn render_for_stderr(&self, width: usize, margin: usize) -> String {
+        self.render_on(width, margin, true)
+    }
+
+    fn render_on(&self, width: usize, margin: usize, stderr: bool) -> String {
+        let links = (if stderr {
+            std::io::stderr().is_terminal()
+        } else {
+            std::io::stdout().is_terminal()
+        }) && std::env::var("TERM").as_deref() != Ok("dumb");
         // NO_COLOR removes the palette, but an interactive selection still benefits from
         // bold. Never force styling into redirected output or a dumb terminal.
         let monochrome_selection = self.background == Some(SELECTION)
@@ -159,10 +184,21 @@ impl Line {
                 if bold {
                     style = style.bold();
                 }
+                if stderr {
+                    style = style.for_stderr();
+                }
                 if !monochrome_selection && let Some((r, g, b)) = self.background {
                     style = style.on_true_color(r, g, b);
                 }
-                style.apply_to(text).to_string()
+                let rendered = style.apply_to(text).to_string();
+                if links
+                    && ink == Ink::Link
+                    && let Some(url) = &self.hyperlink
+                {
+                    format!("\x1b]8;;{url}\x07{rendered}\x1b]8;;\x07")
+                } else {
+                    rendered
+                }
             })
             .collect();
         format!("{}{highlighted}{}", " ".repeat(gutter), " ".repeat(gutter))

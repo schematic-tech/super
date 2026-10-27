@@ -27,6 +27,7 @@ const SOURCE_UPLOAD_TIMEOUT: Duration = Duration::from_hours(1);
 struct ServiceError {
     status: StatusCode,
     body: Option<ApiError>,
+    retry_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl fmt::Display for ServiceError {
@@ -58,6 +59,23 @@ pub fn is_exhausted(error: &anyhow::Error) -> bool {
                 .as_ref()
                 .is_some_and(|body| body.code == api::EXHAUSTED_ERROR_CODE)
     })
+}
+
+pub fn quota_recovery(error: &anyhow::Error) -> Option<chrono::DateTime<chrono::Utc>> {
+    error.downcast_ref::<ServiceError>().and_then(|error| error.retry_at)
+}
+
+fn retry_at(headers: &header::HeaderMap, now: chrono::DateTime<chrono::Utc>) -> Option<chrono::DateTime<chrono::Utc>> {
+    let value = headers.get(header::RETRY_AFTER)?.to_str().ok()?;
+    if let Ok(seconds) = value.parse::<i64>() {
+        return (seconds >= 0)
+            .then_some(seconds)
+            .and_then(chrono::TimeDelta::try_seconds)
+            .and_then(|delay| now.checked_add_signed(delay));
+    }
+    chrono::DateTime::parse_from_rfc2822(value)
+        .ok()
+        .map(|at| at.with_timezone(&chrono::Utc))
 }
 
 fn check_cancellation_pending(error: &anyhow::Error) -> bool {
@@ -799,12 +817,13 @@ impl SuperClient {
 
     async fn service_error(&self, response: Response) -> Result<Response> {
         let status = response.status();
+        let retry_at = retry_at(response.headers(), chrono::Utc::now());
         let body = response
             .json::<ApiErrorEnvelope>()
             .await
             .ok()
             .map(|envelope| envelope.error);
-        Err(ServiceError { status, body }.into())
+        Err(ServiceError { status, body, retry_at }.into())
     }
 
     async fn send_authenticated(&self, request: RequestBuilder) -> Result<Response> {
@@ -1283,6 +1302,7 @@ mod tests {
     fn quota_exhaustion_is_terminal_but_transient_rate_limits_still_retry() {
         for (code, exhausted, retryable) in [("exhausted", true, false), ("rate_limited", false, true)] {
             let error: anyhow::Error = ServiceError {
+                retry_at: None,
                 status: StatusCode::TOO_MANY_REQUESTS,
                 body: Some(ApiError {
                     code: code.into(),
@@ -1297,6 +1317,26 @@ mod tests {
     }
 
     #[test]
+    fn quota_recovery_uses_retry_after_without_parsing_customer_facing_prose() {
+        let now = "2026-10-27T12:00:00Z".parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+        for (value, seconds) in [
+            ("3600", Some(3600)),
+            ("Tue, 27 Oct 2026 13:00:00 GMT", Some(3600)),
+            ("-1", None),
+            ("9223372036854775807", None),
+            ("not a date", None),
+        ] {
+            let mut headers = header::HeaderMap::new();
+            headers.insert(header::RETRY_AFTER, value.parse().unwrap());
+            assert_eq!(
+                retry_at(&headers, now),
+                seconds.map(|seconds| now + chrono::TimeDelta::seconds(seconds))
+            );
+        }
+        assert_eq!(retry_at(&header::HeaderMap::new(), now), None);
+    }
+
+    #[test]
     fn only_explicit_pending_cancellation_is_retried_during_admission() {
         for (status, code, retry) in [
             (StatusCode::CONFLICT, "check_cancellation_pending", true),
@@ -1304,6 +1344,7 @@ mod tests {
             (StatusCode::SERVICE_UNAVAILABLE, "check_cancellation_pending", false),
         ] {
             let error: anyhow::Error = ServiceError {
+                retry_at: None,
                 status,
                 body: Some(ApiError {
                     code: code.into(),
