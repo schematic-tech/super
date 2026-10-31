@@ -11,6 +11,7 @@ use super_types::{SourceLanguage, Supertest};
 
 use crate::git::GitRepository;
 
+mod c;
 mod csharp;
 mod java;
 mod javascript;
@@ -282,190 +283,13 @@ fn supported_language(path: &str) -> Option<SourceLanguage> {
 
 fn parse_declarations(language: SourceLanguage, source: &str) -> Result<Vec<(String, u32)>> {
     match language {
-        SourceLanguage::C => c_declarations(source),
+        SourceLanguage::C => c::declarations(source),
         SourceLanguage::Rust => rust_declarations(source),
         SourceLanguage::Python => python_declarations(source),
         SourceLanguage::CSharp => csharp::declarations(source),
         SourceLanguage::JavaScript => javascript::declarations(source),
         SourceLanguage::Java => java::declarations(source),
         SourceLanguage::Vhdl => vhdl::declarations(source),
-    }
-}
-
-fn c_declarations(source: &str) -> Result<Vec<(String, u32)>> {
-    let markers = c_marker_ranges(source);
-    let mut parsed_source = source.as_bytes().to_vec();
-    for marker in &markers {
-        parsed_source[marker.clone()].fill(b' ');
-    }
-    let parsed_source = String::from_utf8(parsed_source).expect("replacing ASCII C markers preserves UTF-8");
-    let language = tree_sitter_c::LANGUAGE.into();
-    // C collection libraries commonly expose iteration as macros that expand to a
-    // control-flow statement. Before preprocessing, tree-sitter represents forms
-    // such as `LL_FOREACH(head, node) { ... }` as an error inside the function body.
-    // Discovery only needs the file-scoped function declaration; semantic checking
-    // handles the body later, so tolerate body-local macro errors while retaining
-    // syntax validation for top-level declarations and function headers.
-    let tree = parse_c_tree(&language, &parsed_source)?;
-    let root = tree.root_node();
-    let mut declarations = Vec::new();
-    for function in named_children(root).filter(|node| node.kind() == "function_definition") {
-        let Some(declarator) = function.child_by_field_name("declarator") else {
-            continue;
-        };
-        let Some(name) = c_declarator_name(declarator) else {
-            continue;
-        };
-        let Some(marker) = markers.iter().rev().find(|marker| {
-            marker.end <= function.start_byte()
-                && source[marker.end..function.start_byte()]
-                    .bytes()
-                    .all(|byte| byte.is_ascii_whitespace())
-        }) else {
-            continue;
-        };
-        declarations.push((
-            source[name.byte_range()].to_owned(),
-            row_to_line(source[..marker.start].bytes().filter(|byte| *byte == b'\n').count()),
-        ));
-    }
-    Ok(declarations)
-}
-
-fn parse_c_tree(language: &tree_sitter::Language, source: &str) -> Result<tree_sitter::Tree> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(language)
-        .context("could not load the source-language grammar")?;
-    let tree = parser
-        .parse(source, None)
-        .context("the source parser stopped before producing a syntax tree")?;
-    if !tree.root_node().has_error() || !c_has_top_level_syntax_error(tree.root_node()) {
-        return Ok(tree);
-    }
-    bail!("the selected source contains syntax errors")
-}
-
-fn c_has_top_level_syntax_error(root: tree_sitter::Node<'_>) -> bool {
-    let mut cursor = root.walk();
-    root.named_children(&mut cursor).any(|child| {
-        if child.kind() == "function_definition" {
-            let body = child.child_by_field_name("body");
-            return c_has_syntax_error_outside(child, body);
-        }
-        child.has_error()
-    })
-}
-
-fn c_has_syntax_error_outside(node: tree_sitter::Node<'_>, excluded: Option<tree_sitter::Node<'_>>) -> bool {
-    if node.is_error() || node.is_missing() {
-        return true;
-    }
-    let mut cursor = node.walk();
-    node.children(&mut cursor).any(|child| {
-        if excluded.is_some_and(|excluded| child == excluded) {
-            false
-        } else {
-            c_has_syntax_error_outside(child, excluded)
-        }
-    })
-}
-
-fn c_marker_ranges(source: &str) -> Vec<std::ops::Range<usize>> {
-    #[derive(Clone, Copy)]
-    enum State {
-        Code,
-        LineComment,
-        BlockComment,
-        Quoted(u8),
-    }
-
-    const MARKER: &[u8] = b"SUPERTEST";
-    let bytes = source.as_bytes();
-    let mut markers = Vec::new();
-    let mut state = State::Code;
-    let mut preprocessor_line = false;
-    let mut index = 0;
-    while index < bytes.len() {
-        match state {
-            State::Code => match bytes[index] {
-                b'\n' => {
-                    let continued = index > 0 && bytes[index - 1] == b'\\';
-                    preprocessor_line &= continued;
-                    index += 1;
-                }
-                b'#' if source[..index]
-                    .rsplit_once('\n')
-                    .map_or(&source[..index], |(_, line)| line)
-                    .trim()
-                    .is_empty() =>
-                {
-                    preprocessor_line = true;
-                    index += 1;
-                }
-                b'/' if bytes.get(index + 1) == Some(&b'/') => {
-                    state = State::LineComment;
-                    index += 2;
-                }
-                b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                    state = State::BlockComment;
-                    index += 2;
-                }
-                quote @ (b'"' | b'\'') => {
-                    state = State::Quoted(quote);
-                    index += 1;
-                }
-                byte if byte == b'_' || byte.is_ascii_alphabetic() => {
-                    let start = index;
-                    index += 1;
-                    while bytes
-                        .get(index)
-                        .is_some_and(|byte| *byte == b'_' || byte.is_ascii_alphanumeric())
-                    {
-                        index += 1;
-                    }
-                    if !preprocessor_line && &bytes[start..index] == MARKER {
-                        markers.push(start..index);
-                    }
-                }
-                _ => index += 1,
-            },
-            State::LineComment => {
-                if bytes[index] == b'\n' {
-                    state = State::Code;
-                    preprocessor_line = false;
-                }
-                index += 1;
-            }
-            State::BlockComment => {
-                if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
-                    state = State::Code;
-                    index += 2;
-                } else {
-                    index += 1;
-                }
-            }
-            State::Quoted(quote) => {
-                if bytes[index] == b'\\' {
-                    index = (index + 2).min(bytes.len());
-                } else {
-                    if bytes[index] == quote {
-                        state = State::Code;
-                    }
-                    index += 1;
-                }
-            }
-        }
-    }
-    markers
-}
-
-fn c_declarator_name(mut declarator: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
-    loop {
-        if declarator.kind() == "identifier" {
-            return Some(declarator);
-        }
-        declarator = declarator.child_by_field_name("declarator")?;
     }
 }
 
@@ -593,7 +417,7 @@ static void accepts_positive_values(int value) {}
 SUPERTEST void preserves_zero(void) {}
 ";
         assert_eq!(
-            c_declarations(source)
+            c::declarations(source)
                 .unwrap()
                 .into_iter()
                 .map(|(name, _)| name)
@@ -618,7 +442,7 @@ SUPERTEST void hash_claim(void *head, void *node) {
 }
 ";
         assert_eq!(
-            c_declarations(source)
+            c::declarations(source)
                 .unwrap()
                 .into_iter()
                 .map(|(name, _)| name)
@@ -634,7 +458,7 @@ SUPERTEST void hash_claim(void *head, void *node) {
             ["SCHEMATIC", "SUPERTEST"].concat(),
             ["SCHEMATIC", "ASSUME"].concat(),
         );
-        assert!(c_declarations(&source).unwrap().is_empty());
+        assert!(c::declarations(&source).unwrap().is_empty());
     }
 
     #[test]
@@ -658,6 +482,13 @@ pub async fn public_identity(value: i32) {}
     }
 
     #[test]
+    fn rust_turbofish_types_preserve_declaration_names_and_lines() {
+        let source = "type Iter<'a, T> = std::slice::IterMut::<'a, T>;\n#[supertest]\nfn visit<T, F>(values: Vec::<T>, f: F) where F: FnMut(T, std::slice::IterMut::<T>) {}\n";
+        assert_eq!(rust_declarations(source).unwrap(), [("visit".into(), 2)]);
+        assert!(rust_declarations("#[supertest] fn broken(values: Vec::<u8) {}").is_err());
+    }
+
+    #[test]
     fn python_requires_a_supported_import() {
         let direct = "from schematic import *\n\n@supertest\ndef identity(value):\n    pass\n";
         let qualified = "import schematic\n\n@schematic.supertest\ndef identity(value):\n    pass\n";
@@ -675,7 +506,7 @@ const char *example = "SUPERTEST void not_real(void) {}";
 "#;
         let rust = r##"const EXAMPLE: &str = "#[supertest] fn not_real() {}";"##;
         let python = "from schematic import *\ntext = \"@supertest\\ndef not_real(): pass\"\n";
-        assert!(c_declarations(c).unwrap().is_empty());
+        assert!(c::declarations(c).unwrap().is_empty());
         assert!(rust_declarations(rust).unwrap().is_empty());
         assert!(python_declarations(python).unwrap().is_empty());
     }
@@ -685,7 +516,7 @@ const char *example = "SUPERTEST void not_real(void) {}";
         let c = "void helper(void) { SUPERTEST void nested(void) {} }\n";
         let rust = "fn helper() { #[supertest] fn nested() {} }\n";
         let python = "from schematic import *\nclass Claims:\n    @supertest\n    def nested(self): pass\n";
-        assert!(c_declarations(c).unwrap().is_empty());
+        assert!(c::declarations(c).unwrap().is_empty());
         assert!(rust_declarations(rust).unwrap().is_empty());
         assert!(python_declarations(python).unwrap().is_empty());
     }
