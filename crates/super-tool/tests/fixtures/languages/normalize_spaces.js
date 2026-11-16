@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assume, supertest } from "schematic-supertest";
+import { assume, supertest } from "@schematic-tech/supertest";
 import { collapseSpaces } from "../src/text.js";
 
 export const normalizingTwiceChangesNothing = supertest((text) => {

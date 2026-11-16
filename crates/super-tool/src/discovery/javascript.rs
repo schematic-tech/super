@@ -153,7 +153,10 @@ fn authoring_package(node: Node<'_>, source: &str) -> bool {
     node.kind() == "string"
         && matches!(
             source[node.byte_range()].trim_matches(['\'', '"']),
-            "schematic-supertest" | "schematic-supertest/browser"
+            "@schematic-tech/supertest"
+                | "@schematic-tech/supertest/browser"
+                | "schematic-supertest"
+                | "schematic-supertest/browser"
         )
 }
 
@@ -190,6 +193,26 @@ mod tests {
             declarations(source).unwrap(),
             [("first".into(), 3), ("second".into(), 3), ("third".into(), 4)]
         );
+    }
+
+    #[test]
+    fn finds_scoped_package_imports_in_esm_and_commonjs() {
+        for package in ["@schematic-tech/supertest", "@schematic-tech/supertest/browser"] {
+            let source = format!(
+                "import {{ supertest as law }} from '{package}';\nimport * as schematic from '{package}';\nexport const first = law(x => x);\nconst second = schematic.supertest(x => x);"
+            );
+            assert_eq!(
+                declarations(&source).unwrap(),
+                [("first".into(), 3), ("second".into(), 4)]
+            );
+            let source = format!(
+                "const {{ supertest: law }} = require('{package}');\nconst schematic = require('{package}');\nconst first = law(x => x);\nconst second = schematic.supertest(x => x);"
+            );
+            assert_eq!(
+                declarations(&source).unwrap(),
+                [("first".into(), 3), ("second".into(), 4)]
+            );
+        }
     }
 
     #[test]
