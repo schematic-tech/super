@@ -1,6 +1,6 @@
 {
   "name": "@schematic-tech/super",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Install the Super CLI and set up your coding agent",
   "type": "module",
   "license": "Apache-2.0",
