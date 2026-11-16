@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { clientFor, entry, fixture, packageRoot } from './helpers.mjs';
@@ -44,17 +44,47 @@ test('the packed sidecar installs offline and serves MCP using only published ru
   assert.deepEqual(packed.files.map((file) => file.path).sort(), expected.sort());
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
   assert.deepEqual(Object.keys(manifest.scripts), ['test']);
+  // npm ci caches dependency archives, but need not cache registry metadata.
+  // Give the consumer an exact lock so this offline test works on a fresh runner.
+  const sourceLock = JSON.parse(readFileSync(join(packageRoot, 'package-lock.json'), 'utf8'));
+  const consumer = {
+    name: 'super-mcp-install-test',
+    version: '1.0.0',
+    private: true,
+    dependencies: { [manifest.name]: `file:${packed.filename}` },
+  };
+  const lock = {
+    name: consumer.name,
+    version: consumer.version,
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      '': consumer,
+      ...Object.fromEntries(
+        Object.entries(sourceLock.packages).filter(([path, pkg]) => path && !pkg.dev),
+      ),
+      [`node_modules/${manifest.name}`]: {
+        version: manifest.version,
+        resolved: `file:${packed.filename}`,
+        integrity: packed.integrity,
+        dependencies: manifest.dependencies,
+        bin: manifest.bin,
+        engines: manifest.engines,
+      },
+    },
+  };
+  writeFileSync(join(setup.root, 'package.json'), JSON.stringify(consumer));
+  writeFileSync(join(setup.root, 'package-lock.json'), JSON.stringify(lock));
   execFileSync(
     'npm',
     [
-      'install',
+      'ci',
       '--prefix',
       setup.root,
       '--offline',
       '--ignore-scripts',
       '--no-audit',
       '--no-fund',
-      join(setup.root, packed.filename),
     ],
     { encoding: 'utf8' },
   );
