@@ -1,0 +1,80 @@
+name: Publish npm installer
+run-name: ${{ inputs.mode }} npm installer ${{ inputs.version }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Check the reviewed package or publish it
+        type: choice
+        options: [check, publish]
+        default: check
+      version:
+        description: Reviewed npm installer version (independent of the Rust CLI)
+        required: true
+        type: string
+      commit:
+        description: Full reviewed public commit ID
+        required: true
+        type: string
+      integrity:
+        description: Reviewed npm archive SHA-512 integrity from publish-npm.py prepare
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-installer
+  cancel-in-progress: false
+
+env:
+  RELEASE_NPM_VERSION: ${{ inputs.version }}
+  RELEASE_COMMIT: ${{ inputs.commit }}
+  RELEASE_NPM_INTEGRITY: ${{ inputs.integrity }}
+
+jobs:
+  validate:
+    if: github.repository == 'schematic-tech/super' && github.ref == 'refs/heads/main' && github.sha == inputs.commit
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11.20.0
+      - run: npm test --prefix npm
+      - run: python3 .github/publish-npm.py prepare
+
+  publish:
+    if: inputs.mode == 'publish'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm install --global npm@11.20.0
+      - name: Reproduce the reviewed package
+        run: python3 .github/publish-npm.py prepare
+      - name: Publish with npm trusted publishing
+        run: python3 .github/publish-npm.py publish

@@ -1,0 +1,33 @@
+{
+  "name": "@schematic-tech/super",
+  "version": "0.1.0",
+  "description": "Install the Super CLI and set up your coding agent",
+  "type": "module",
+  "license": "Apache-2.0",
+  "homepage": "https://get.schematic.tech/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/schematic-tech/super.git",
+    "directory": "npm"
+  },
+  "bin": {
+    "super-install": "install.mjs"
+  },
+  "files": [
+    "install.mjs",
+    "cli.sh",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "os": ["darwin", "linux"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
