@@ -1,0 +1,39 @@
+{
+  "name": "@schematic-tech/super-mcp",
+  "version": "0.1.0",
+  "description": "Model Context Protocol sidecar for the Super CLI",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/schematic-tech/super.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://docs.schematic.tech/super/ai/",
+  "bin": {
+    "super-mcp": "bin/super-mcp.mjs"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "test": "node --test --test-timeout=30000 test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}

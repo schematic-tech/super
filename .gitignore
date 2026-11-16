@@ -1,2 +1,4 @@
 /target/
+/mcp/node_modules/
+/mcp/*.tgz
 .DS_Store

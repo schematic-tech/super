@@ -1,16 +1,21 @@
-name: Publish npm installer
-run-name: ${{ inputs.mode }} npm installer ${{ inputs.version }}
+name: Publish npm sidecar
+run-name: ${{ inputs.mode }} npm ${{ inputs.package }} ${{ inputs.version }}
 
 on:
   workflow_dispatch:
     inputs:
+      package:
+        description: Reviewed sidecar to publish
+        type: choice
+        options: [installer, mcp]
+        default: installer
       mode:
         description: Check the reviewed package or publish it
         type: choice
         options: [check, publish]
         default: check
       version:
-        description: Reviewed npm installer version (independent of the Rust CLI)
+        description: Reviewed npm sidecar version (independent of the Rust CLI)
         required: true
         type: string
       commit:
@@ -26,10 +31,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: npm-installer
+  group: npm-${{ inputs.package }}
   cancel-in-progress: false
 
 env:
+  RELEASE_NPM_PACKAGE: ${{ inputs.package }}
   RELEASE_NPM_VERSION: ${{ inputs.version }}
   RELEASE_COMMIT: ${{ inputs.commit }}
   RELEASE_NPM_INTEGRITY: ${{ inputs.integrity }}
@@ -40,6 +46,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
+        node: ['22.14.0', '24']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -49,10 +56,19 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
       - run: npm install --global npm@11.20.0
-      - run: npm test --prefix npm
+      - name: Test the selected sidecar
+        run: |
+          case "$RELEASE_NPM_PACKAGE" in
+            installer) npm test --prefix npm ;;
+            mcp)
+              npm ci --prefix mcp --ignore-scripts --no-audit --no-fund
+              npm test --prefix mcp
+              ;;
+            *) exit 1 ;;
+          esac
       - run: python3 .github/publish-npm.py prepare
 
   publish:
