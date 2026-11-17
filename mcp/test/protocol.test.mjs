@@ -10,7 +10,7 @@ test('advertises typed tools, read-only resources, templates, and prompts over s
   const setup = fixture(t);
   const { client, diagnostics } = await clientFor(t, setup);
   const { tools } = await client.listTools();
-  assert.equal(tools.length, 10);
+  assert.equal(tools.length, 11);
   assert.equal(tools.find((tool) => tool.name === 'super_status').annotations.readOnlyHint, true);
   assert.equal(
     tools.find((tool) => tool.name === 'super_apply_fix').annotations.destructiveHint,
@@ -123,6 +123,7 @@ test('read-only mode removes mutation tools rather than relying on annotations',
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
     'super_info',
+    'super_open_dashboard',
     'super_preview_fix',
     'super_status',
     'super_usage',
@@ -203,7 +204,7 @@ test('also negotiates with existing 2025 MCP hosts and writes only protocol JSON
   );
   for (let attempt = 0; !messages.some((message) => message.id === 2) && attempt < 100; attempt++)
     await delay(20);
-  assert.equal(messages.find((message) => message.id === 2).result.tools.length, 10);
+  assert.equal(messages.find((message) => message.id === 2).result.tools.length, 11);
   const exited = once(child, 'exit');
   child.stdin.end();
   await exited;

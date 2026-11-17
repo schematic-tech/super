@@ -30,8 +30,10 @@ const selection = (shape = {}, required = false) =>
     .strictObject({ ...targets, ...shape })
     .refine(
       (args) =>
-        ['path', 'run_id', 'check_number'].filter((name) => args[name] !== undefined).length <= 1 &&
-        (!required || ['path', 'run_id', 'check_number'].some((name) => args[name] !== undefined)),
+        ['path', 'run_id', 'check_number'].filter((name) => args[name] !== undefined).length <=
+          1 &&
+        (!required ||
+          ['path', 'run_id', 'check_number'].some((name) => args[name] !== undefined)),
       required
         ? 'Choose exactly one of path, run_id, or check_number.'
         : 'Choose at most one of path, run_id, or check_number.',
@@ -42,7 +44,13 @@ const resultSchema = z.object({
   signal: z.string().nullable(),
   stopped: z.string().nullable(),
   integer_encoding: z.string(),
-  events: z.array(z.object({ schema_version: z.literal(1), type: z.string(), data: z.unknown() })),
+  events: z.array(
+    z.object({
+      schema_version: z.literal(1),
+      type: z.string(),
+      data: z.unknown(),
+    }),
+  ),
   diagnostics: z.string().optional(),
   error: z.string().optional(),
   recovery: z.string().optional(),
@@ -84,7 +92,7 @@ function requestOptions(context) {
   };
 }
 
-export function createServer(bridge, { readOnly = false } = {}) {
+export function createServer(bridge, { readOnly = false, dashboard } = {}) {
   const instructions = [
     'Super checks code behavior. This server serves one configured Git worktree using the installed Super CLI and its existing login.',
     `Requires Super CLI ${MINIMUM_CLI_VERSION} or later. Authentication is managed outside MCP: run super login in a terminal. Never request API keys or login secrets through tools.`,
@@ -101,11 +109,17 @@ export function createServer(bridge, { readOnly = false } = {}) {
         ]
       : []),
   ].join('\n');
-  const server = new McpServer({ name: PACKAGE.name, version: PACKAGE.version }, { instructions });
+  const server = new McpServer(
+    { name: PACKAGE.name, version: PACKAGE.version },
+    { instructions },
+  );
 
   async function invoke(command, args, options, context) {
     try {
-      const response = await bridge.run(command, args, { ...requestOptions(context), ...options });
+      const response = await bridge.run(command, args, {
+        ...requestOptions(context),
+        ...options,
+      });
       return result(response.output, response.isError);
     } catch (error) {
       const code =
@@ -161,6 +175,37 @@ export function createServer(bridge, { readOnly = false } = {}) {
     );
   }
 
+  if (dashboard)
+    server.registerTool(
+      'super_open_dashboard',
+      {
+        title: 'Open Super history',
+        description:
+          'Show the live recent supertest history for this worktree in a local browser. Call only when the user asks to view history in the browser. Opens a new browser instance where supported; browser preferences may choose a tab. Set open_browser=false to return the URL only. Available in read-only mode.',
+        inputSchema: z.strictObject({
+          open_browser: z.boolean().default(true),
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async ({ open_browser }) => {
+        try {
+          return result(await dashboard.show({ openBrowser: open_browser }));
+        } catch {
+          return result(
+            {
+              error: 'Could not start the local dashboard. Restart or update the MCP sidecar.',
+            },
+            true,
+          );
+        }
+      },
+    );
+
   const info = async () => {
     const directory = await bridge.directory();
     let cli;
@@ -201,7 +246,10 @@ export function createServer(bridge, { readOnly = false } = {}) {
   tool(
     'super_status',
     'Read existing checks or a run without uploading source or starting work. With no selection, reads the latest run. Set history=true and use next_before for pagination. Status success does not mean the checks passed.',
-    selection({ history: z.boolean().default(false), before: checkNumber.optional() }).refine(
+    selection({
+      history: z.boolean().default(false),
+      before: checkNumber.optional(),
+    }).refine(
       (args) => args.before === undefined || args.history,
       'before requires history=true.',
     ),
@@ -262,7 +310,11 @@ export function createServer(bridge, { readOnly = false } = {}) {
       invoke(
         'status',
         argumentsForTarget(args, ['--watch']),
-        { selector: args.path, observation: true, timeoutMs: args.timeout_seconds * 1000 },
+        {
+          selector: args.path,
+          observation: true,
+          timeoutMs: args.timeout_seconds * 1000,
+        },
         context,
       ),
   );
@@ -281,7 +333,10 @@ export function createServer(bridge, { readOnly = false } = {}) {
         (args) => !args.include_uncommitted || args.commit === undefined,
         'commit and include_uncommitted are mutually exclusive.',
       )
-      .refine((args) => !args.commit?.startsWith('-'), 'A Git revision cannot start with a dash.'),
+      .refine(
+        (args) => !args.commit?.startsWith('-'),
+        'A Git revision cannot start with a dash.',
+      ),
     false,
     (args, context) =>
       invoke(
@@ -303,7 +358,8 @@ export function createServer(bridge, { readOnly = false } = {}) {
     'Explicitly cancel shared checks for all observers. Requires a path, run ID, or check number. Inspect each cancellation outcome; requested or unconfirmed outcomes need a later status check.',
     selection({}, true),
     false,
-    (args, context) => invoke('cancel', argumentsForTarget(args), { selector: args.path }, context),
+    (args, context) =>
+      invoke('cancel', argumentsForTarget(args), { selector: args.path }, context),
     { idempotent: true },
   );
 
@@ -312,7 +368,8 @@ export function createServer(bridge, { readOnly = false } = {}) {
     'Retrieve and preview a proposed fix for one check, including its exact diff, instructions, validation, and applicability. Does not change working files. May wait for a pending proposal.',
     z.strictObject({ check_number: checkNumber }),
     true,
-    (args, context) => invoke('fix', [`--check=${args.check_number}`, '--dry-run'], {}, context),
+    (args, context) =>
+      invoke('fix', [`--check=${args.check_number}`, '--dry-run'], {}, context),
   );
 
   tool(
@@ -321,7 +378,12 @@ export function createServer(bridge, { readOnly = false } = {}) {
     z.strictObject({ check_number: checkNumber }),
     false,
     (args, context) =>
-      invoke('fix', [`--check=${args.check_number}`, '--yes'], { mutatesWorktree: true }, context),
+      invoke(
+        'fix',
+        [`--check=${args.check_number}`, '--yes'],
+        { mutatesWorktree: true },
+        context,
+      ),
   );
 
   tool(
@@ -349,7 +411,10 @@ export function createServer(bridge, { readOnly = false } = {}) {
     const response = await invoke(command, args, options, context);
     return resource(
       uri,
-      JSON.stringify({ ...response.structuredContent, isError: response.isError }),
+      JSON.stringify({
+        ...response.structuredContent,
+        isError: response.isError,
+      }),
     );
   };
   server.registerResource(
@@ -381,7 +446,9 @@ export function createServer(bridge, { readOnly = false } = {}) {
       mimeType: 'application/json',
     },
     (uri, context) =>
-      resourceResponse(uri, 'usage', ['--period=30d'], context, { repository: false }),
+      resourceResponse(uri, 'usage', ['--period=30d'], context, {
+        repository: false,
+      }),
   );
   server.registerResource(
     'super-check',
@@ -392,7 +459,12 @@ export function createServer(bridge, { readOnly = false } = {}) {
       mimeType: 'application/json',
     },
     (uri, variables, context) =>
-      resourceResponse(uri, 'status', [`--check=${checkNumber.parse(variables.number)}`], context),
+      resourceResponse(
+        uri,
+        'status',
+        [`--check=${checkNumber.parse(variables.number)}`],
+        context,
+      ),
   );
   server.registerResource(
     'super-run',

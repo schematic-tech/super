@@ -151,7 +151,11 @@ fn spawn_refresh_with(directory: &Path, executable: &Path) -> Result<()> {
 pub async fn refresh_detached(directory: &Path) -> Result<()> {
     #[cfg(unix)]
     nix::unistd::setsid()?;
-    refresh(directory, RELEASES_URL, FETCH_TIMEOUT).await
+    let (releases, ()) = tokio::join!(
+        refresh(directory, RELEASES_URL, FETCH_TIMEOUT),
+        crate::skills::refresh_installed()
+    );
+    releases
 }
 
 async fn refresh(directory: &Path, url: &str, timeout: Duration) -> Result<()> {

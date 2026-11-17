@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { clientFor, entry, fixture, packageRoot } from './helpers.mjs';
 
 test('help and client configuration work without a CLI installation or login', (t) => {
   const setup = fixture(t);
-  const help = execFileSync(process.execPath, [entry, '--help'], { encoding: 'utf8' });
+  const help = execFileSync(process.execPath, [entry, '--help'], {
+    encoding: 'utf8',
+  });
   assert.match(help, /MCP stdio/);
   const config = JSON.parse(
     execFileSync(
@@ -27,10 +29,14 @@ test('help and client configuration work without a CLI installation or login', (
 test('the packed sidecar installs offline and serves MCP using only published runtime files', async (t) => {
   const setup = fixture(t);
   const packed = JSON.parse(
-    execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', setup.root], {
-      cwd: packageRoot,
-      encoding: 'utf8',
-    }),
+    execFileSync(
+      'npm',
+      ['pack', '--json', '--ignore-scripts', '--pack-destination', setup.root],
+      {
+        cwd: packageRoot,
+        encoding: 'utf8',
+      },
+    ),
   )[0];
   const expected = [
     'LICENSE',
@@ -38,6 +44,15 @@ test('the packed sidecar installs offline and serves MCP using only published ru
     'lib/cli.mjs',
     'lib/config.mjs',
     'lib/server.mjs',
+    'lib/dashboard.mjs',
+    ...readdirSync(join(packageRoot, 'public'), {
+      recursive: true,
+      withFileTypes: true,
+    })
+      .filter((entry) => entry.isFile())
+      .map((entry) =>
+        join(entry.parentPath, entry.name).slice(packageRoot.length).replaceAll('\\', '/'),
+      ),
     'package.json',
   ];
   if (existsSync(join(packageRoot, 'README.md'))) expected.push('README.md');
@@ -77,15 +92,7 @@ test('the packed sidecar installs offline and serves MCP using only published ru
   writeFileSync(join(setup.root, 'package-lock.json'), JSON.stringify(lock));
   execFileSync(
     'npm',
-    [
-      'ci',
-      '--prefix',
-      setup.root,
-      '--offline',
-      '--ignore-scripts',
-      '--no-audit',
-      '--no-fund',
-    ],
+    ['ci', '--prefix', setup.root, '--offline', '--ignore-scripts', '--no-audit', '--no-fund'],
     { encoding: 'utf8' },
   );
   const installedEntry = join(
@@ -93,7 +100,10 @@ test('the packed sidecar installs offline and serves MCP using only published ru
     'node_modules/@schematic-tech/super-mcp/bin/super-mcp.mjs',
   );
   const { client } = await clientFor(t, setup, [], installedEntry);
-  const response = await client.callTool({ name: 'super_status', arguments: { check_number: 23 } });
+  const response = await client.callTool({
+    name: 'super_status',
+    arguments: { check_number: 23 },
+  });
   assert.equal(response.isError, false);
   assert.equal(response.structuredContent.events[0].data.rows[0].current.number, 23);
 });

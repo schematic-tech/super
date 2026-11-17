@@ -2,3 +2,7 @@
 /mcp/node_modules/
 /mcp/*.tgz
 .DS_Store
+
+/mcp/web/node_modules/
+/mcp/web/.svelte-kit/
+/mcp/public/

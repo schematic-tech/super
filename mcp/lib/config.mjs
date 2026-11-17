@@ -17,12 +17,16 @@ export function configuration(args = process.argv.slice(2)) {
       'super-bin': { type: 'string' },
       'read-only': { type: 'boolean', default: false },
       'timeout-seconds': { type: 'string', default: '120' },
+      dashboard: { type: 'boolean', default: false },
       'print-config': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', short: 'v', default: false },
     },
   });
-  if (!/^[1-9]\d*$/.test(values['timeout-seconds']) || Number(values['timeout-seconds']) > 600) {
+  if (
+    !/^[1-9]\d*$/.test(values['timeout-seconds']) ||
+    Number(values['timeout-seconds']) > 600
+  ) {
     throw new Error('--timeout-seconds must be an integer from 1 to 600.');
   }
   return {
@@ -30,6 +34,7 @@ export function configuration(args = process.argv.slice(2)) {
     binary: values['super-bin'],
     readOnly: values['read-only'],
     timeoutMs: Number(values['timeout-seconds']) * 1000,
+    dashboard: values.dashboard,
     printConfig: values['print-config'],
     help: values.help,
     version: values.version,
@@ -45,6 +50,7 @@ Requires Super CLI ${MINIMUM_CLI_VERSION} or later. Run super login in your term
   --super-bin PATH        Use a particular Super executable
   --read-only             Expose inspection tools without starting checks or making changes
   --timeout-seconds N     Interrupt a CLI command after 1–600 seconds (default: 120)
+  --dashboard             Open live history in a browser without an MCP client
   --print-config          Print MCP client JSON configuration and exit
   --version, -v           Print the MCP sidecar version
   --help, -h              Show this help

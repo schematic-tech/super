@@ -65,6 +65,9 @@ jobs:
             installer) npm test --prefix npm ;;
             mcp)
               npm ci --prefix mcp --ignore-scripts --no-audit --no-fund
+              npm ci --prefix mcp/web --ignore-scripts --no-audit --no-fund
+              npm run check --prefix mcp/web
+              npm run build --prefix mcp/web
               npm test --prefix mcp
               ;;
             *) exit 1 ;;

@@ -1805,7 +1805,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "super-tool"
-version = "0.14.3"
+version = "0.14.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -1848,7 +1848,7 @@ dependencies = [
 
 [[package]]
 name = "super-types"
-version = "0.14.3"
+version = "0.14.4"
 dependencies = [
  "base64",
  "chrono",

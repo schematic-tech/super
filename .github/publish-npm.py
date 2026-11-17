@@ -22,8 +22,8 @@ PROFILES = {
     "installer": {"name": PACKAGE, "directory": "npm", "bin": {"super-install": "install.mjs"},
                   "files": FILES, "dependencies": set(), "devDependencies": set()},
     "mcp": {"name": "@schematic-tech/super-mcp", "directory": "mcp", "bin": {"super-mcp": "bin/super-mcp.mjs"},
-            "files": {"package.json", "LICENSE", "bin/super-mcp.mjs", "lib/cli.mjs", "lib/config.mjs", "lib/server.mjs"},
-            "dependencies": {"@modelcontextprotocol/server", "zod"},
+            "files": {"package.json", "LICENSE", "bin/super-mcp.mjs", "lib/cli.mjs", "lib/config.mjs", "lib/server.mjs", "lib/dashboard.mjs"},
+            "dependencies": {"@modelcontextprotocol/server", "zod", "open"},
             "devDependencies": {"@modelcontextprotocol/client"}},
 }
 
@@ -33,6 +33,14 @@ def profile_files(root, profile):
     files = set(config["files"])
     if profile == "mcp" and (root / config["directory"] / "README.md").is_file():
         files.add("README.md")
+    if profile == "mcp":
+        public = root / "mcp/public"
+        require((public / "index.html").is_file(), "Build the dashboard before packing the MCP package.")
+        for file in public.rglob("*"):
+            require(not file.is_symlink(), "Dashboard assets cannot be symbolic links.")
+            if file.is_file():
+                require(file.suffix in {".html", ".js", ".css", ".json", ".woff2", ".woff", ".svg", ".txt"}, "Unexpected dashboard asset.")
+                files.add(file.relative_to(root / "mcp").as_posix())
     return files
 
 
@@ -101,9 +109,16 @@ def archive(root, version, profile="installer"):
     return path, integrity
 
 
+def build_dashboard(root):
+    subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=root / "mcp/web", check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["npm", "run", "build"], cwd=root / "mcp/web", check=True, stdout=subprocess.DEVNULL)
+
+
 def prepare(root, version, commit, expected=None, profile="installer"):
     config = PROFILES[profile]
     identity(root, version, commit, profile)
+    if profile == "mcp":
+        build_dashboard(root)
     output = root / "target/npm"
     output.mkdir(parents=True, exist_ok=True)
     result = json.loads(run(root / config["directory"], "npm", "pack", "--json", "--ignore-scripts",

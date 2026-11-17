@@ -8,6 +8,7 @@ mod git;
 mod login;
 mod oauth;
 mod output;
+mod skills;
 mod updates;
 mod usage;
 
