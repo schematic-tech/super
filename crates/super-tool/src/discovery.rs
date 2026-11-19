@@ -24,6 +24,17 @@ pub struct Discovery {
     pub excluded: Vec<String>,
 }
 
+#[derive(Debug)]
+struct UnparseableSource;
+
+impl std::fmt::Display for UnparseableSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the selected source contains syntax errors")
+    }
+}
+
+impl std::error::Error for UnparseableSource {}
+
 const MAX_SOURCE_FILE_SIZE: u64 = 10 * 1024 * 1024;
 
 pub fn selector_target(current_directory: &Path, selector: &str) -> Result<PathBuf> {
@@ -134,9 +145,15 @@ pub fn discover(
             continue;
         }
         let language = supported_language(&file).expect("candidate language");
-        let source = repository.file_at_commit(commit_oid, &file)?;
-        let declarations = parse_declarations(language, &source)
-            .with_context(|| format!("could not parse `{file}` for supertests"))?;
+        let bytes = repository.file_bytes_at_commit(commit_oid, &file)?;
+        let Ok(source) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let declarations = match parse_declarations(language, source) {
+            Ok(declarations) => declarations,
+            Err(error) if error.is::<UnparseableSource>() => continue,
+            Err(error) => return Err(error).with_context(|| format!("could not parse `{file}` for supertests")),
+        };
         let mut names = HashSet::new();
         for (name, line) in declarations {
             if !names.insert(name.clone()) {
@@ -384,11 +401,9 @@ fn parse_tree(language: &tree_sitter::Language, source: &str) -> Result<tree_sit
     parser
         .set_language(language)
         .context("could not load the source-language grammar")?;
-    let tree = parser
-        .parse(source, None)
-        .context("the source parser stopped before producing a syntax tree")?;
+    let tree = parser.parse(source, None).ok_or(UnparseableSource)?;
     if tree.root_node().has_error() {
-        bail!("the selected source contains syntax errors")
+        return Err(UnparseableSource.into());
     }
     Ok(tree)
 }

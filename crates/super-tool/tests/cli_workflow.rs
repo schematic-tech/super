@@ -104,6 +104,32 @@ fn language_examples_support_discovery_submission_results_and_rechecking() {
 }
 
 #[test]
+fn discovery_silently_skips_unparseable_files_and_submits_the_other_supertests() {
+    let broken = "nested/src/lib.rs";
+    let fixture = Fixture::with_files(
+        false,
+        false,
+        &[
+            ("test.py", SOURCE),
+            (broken, "#[schematic::supertest] fn partial() {}\nfn unfinished("),
+        ],
+        |_| {},
+    );
+    let output = fixture.run(&["check", ".", "--detach", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(broken));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(broken));
+    assert_eq!(
+        fixture.service.submissions.lock().unwrap()[0]["supertests"],
+        json!([{"path": "test.py", "name": "law", "language": "python", "line": 3}])
+    );
+    let output = fixture.run(&["check", broken, "--detach", "--json"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("no supertests were discovered"));
+    assert_eq!(fixture.service.submissions.lock().unwrap().len(), 1);
+}
+
+#[test]
 fn csharp_empty_interpolation_does_not_block_repository_checks() {
     let source = r#"class Ordinary {
     void Log() {

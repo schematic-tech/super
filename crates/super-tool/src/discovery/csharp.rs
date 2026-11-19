@@ -16,9 +16,7 @@ fn declaration_tree(source: &str) -> Result<tree_sitter::Tree> {
     parser
         .set_language(&language)
         .context("could not load the source-language grammar")?;
-    let mut tree = parser
-        .parse(source, None)
-        .context("the source parser stopped before producing a syntax tree")?;
+    let mut tree = parser.parse(source, None).ok_or(super::UnparseableSource)?;
     // tree-sitter-c-sharp 0.23.5 loses scanner state for $"". Replace only the
     // recognized interpolation prefix with a space, then require a valid reparse.
     // Byte offsets and the original source used for declarations/uploads stay intact.
@@ -40,12 +38,12 @@ fn declaration_tree(source: &str) -> Result<tree_sitter::Tree> {
             pending.extend(named_children(node));
         }
         if !changed {
-            bail!("the selected source contains syntax errors");
+            return Err(super::UnparseableSource.into());
         }
         // A reparse can expose another empty string obscured by the first error.
         tree = parser
             .parse(recovered_source.as_ref().expect("a changed source exists"), None)
-            .context("the source parser stopped before producing a syntax tree")?;
+            .ok_or(super::UnparseableSource)?;
     }
     Ok(tree)
 }

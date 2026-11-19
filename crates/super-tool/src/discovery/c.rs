@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::{Context, Result, bail, named_children, row_to_line};
+use super::{Context, Result, named_children, row_to_line};
 
 pub(super) fn declarations(source: &str) -> Result<Vec<(String, u32)>> {
     let identifiers = c_identifier_ranges(source);
@@ -70,9 +70,7 @@ fn parse_c_tree(
     parser
         .set_language(language)
         .context("could not load the source-language grammar")?;
-    let mut tree = parser
-        .parse(source.as_bytes(), None)
-        .context("the source parser stopped before producing a syntax tree")?;
+    let mut tree = parser.parse(source.as_bytes(), None).ok_or(super::UnparseableSource)?;
     // Object-like annotation macros are not C type names. Recognize only local
     // definitions that expand to an attribute or nothing in every branch. Keep
     // directives, comments, strings and byte offsets intact; the original source
@@ -88,14 +86,12 @@ fn parse_c_tree(
     }
     if changed {
         *source = String::from_utf8(bytes).expect("replacing identifiers preserves UTF-8");
-        tree = parser
-            .parse(source.as_bytes(), None)
-            .context("the source parser stopped before producing a syntax tree")?;
+        tree = parser.parse(source.as_bytes(), None).ok_or(super::UnparseableSource)?;
     }
     if !c_has_declaration_error(tree.root_node()) {
         return Ok(tree);
     }
-    bail!("the selected source contains syntax errors")
+    Err(super::UnparseableSource.into())
 }
 
 fn annotation_macros(
